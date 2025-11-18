@@ -815,23 +815,33 @@
     <script>
         // Configuration
         const API_BASE_URL = 'http://127.0.0.1:8000/v1/exercise';
-
+        
         const exerciseIcons = {
-            'barbell_biceps_curl_rules': '/images/exercises/barbel-curls.png',
-            'squat_rules': '/images/exercises/squat.png',
-            'pushup_rules': '/images/exercises/pushups.png',
-            'plank_rules': '/images/exercises/plank.png',
-            'deadlift_rules': '/images/exercises/deadlift.png'
+            'barbell biceps curl': '/images/exercises/barbel-curls.png',
+            'squat': '/images/exercises/squat.png',
+            'pushup': '/images/exercises/pushups.png',
+            'plank': '/images/exercises/plank.png',
+            'deadlift': '/images/exercises/deadlift.png'
         };
 
         const exerciseDisplayNames = {
-            'barbell_biceps_curl_rules': 'Barbell Biceps Curl',
-            'squat_rules': 'Squat',
-            'pushup_rules': 'Push-Up',
-            'plank_rules': 'Plank',
-            'deadlift_rules': 'Deadlift'
+            'barbell biceps curl': 'Barbell Biceps Curl',
+            'squat': 'Squat',
+            'pushup': 'Push-Up',
+            'plank': 'Plank',
+            'deadlift': 'Deadlift'
         };
 
+        function convertExerciseName(newName) {
+            const conversions = {
+                'barbell_biceps_curl_rules': 'barbell biceps curl',
+                'squat_rules': 'squat',
+                'pushup_rules': 'pushup', 
+                'plank_rules': 'plank',
+                'deadlift_rules': 'deadlift'
+            };
+            return conversions[newName] || newName;
+        }
         // Global variables
         let ws = null;
         let pose = null;
