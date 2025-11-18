@@ -1,0 +1,1660 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Exercise Posture Detector</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #4361ee;
+            --secondary: #3a0ca3;
+            --success: #4cc9f0;
+            --warning: #118076;
+            --dark: #212529;
+            --light: #f8f9fa;
+            --gray: #6c757d;
+            --transition: all 0.3s ease;
+            --shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+            --radius: 12px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        body {
+            background: linear-gradient(135deg, #1a2a6c, #118076, #fdbb2d);
+            background-size: 400% 400%;
+            animation: gradientBG 15s ease infinite;
+            color: var(--light);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        @keyframes gradientBG {
+            0% {
+                background-position: 0% 50%;
+            }
+
+            50% {
+                background-position: 100% 50%;
+            }
+
+            100% {
+                background-position: 0% 50%;
+            }
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            text-align: center;
+            padding: 30px 0;
+            animation: fadeIn 1s ease;
+        }
+
+        header h1 {
+            font-size: 2.8rem;
+            margin-bottom: 15px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        header p {
+            font-size: 1.2rem;
+            max-width: 600px;
+            margin: 0 auto;
+            opacity: 0.9;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: var(--radius);
+            padding: 30px;
+            box-shadow: var(--shadow);
+            margin: 20px auto;
+            max-width: 500px;
+            animation: slideUp 0.8s ease;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .card h2 {
+            text-align: center;
+            margin-bottom: 25px;
+            font-size: 1.8rem;
+        }
+
+        select,
+        button {
+            width: 100%;
+            padding: 15px;
+            border-radius: 8px;
+            border: none;
+            font-size: 1.1rem;
+            margin-bottom: 20px;
+            transition: var(--transition);
+        }
+
+        select {
+            background: rgba(255, 255, 255, 0.9);
+            color: var(--dark);
+            cursor: pointer;
+        }
+
+        select:focus {
+            outline: 2px solid var(--primary);
+            transform: scale(1.02);
+        }
+
+        button {
+            background: var(--primary);
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        button:hover:not(:disabled) {
+            background: var(--secondary);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
+        }
+
+        button:disabled {
+            background: var(--gray);
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        #stop-btn {
+            background: var(--warning);
+            max-width: 200px;
+            margin: 20px auto;
+            display: none;
+        }
+
+        #stop-btn:hover {
+            background: #d81159;
+        }
+
+        /* Exercise View Styles */
+        #exercise-view {
+            display: none;
+        }
+
+        .exercise-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 0;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        .exercise-header h1 {
+            font-size: 2.2rem;
+        }
+
+        .stats-panel {
+            display: flex;
+            justify-content: space-around;
+            margin: 30px 0;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+
+        .stat-box {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: var(--radius);
+            padding: 20px;
+            text-align: center;
+            min-width: 150px;
+            box-shadow: var(--shadow);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            animation: pulse 2s infinite;
+        }
+
+        .stat-box h3 {
+            font-size: 1.2rem;
+            margin-bottom: 10px;
+            opacity: 0.8;
+        }
+
+        .counter {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: var(--success);
+        }
+
+        .status {
+            font-size: 1.8rem;
+            font-weight: bold;
+            padding: 5px 10px;
+            border-radius: 6px;
+        }
+
+        .status.good {
+            background: rgba(76, 201, 240, 0.2);
+            color: var(--success);
+        }
+
+        .status.bad {
+            background: rgba(247, 37, 133, 0.2);
+            color: var(--warning);
+        }
+
+        .video-feed {
+            text-align: center;
+            margin: 30px 0;
+            position: relative;
+        }
+
+        .video-placeholder {
+            position: relative;
+            display: inline-block;
+            border-radius: var(--radius);
+            overflow: hidden;
+            box-shadow: 0 12px 24px rgba(0, 0, 0, 0.2);
+            width: 100%;
+            max-width: 640px;
+        }
+
+        /* Modified video and canvas styling */
+        #camera-stream,
+        #pose-canvas {
+            border-radius: var(--radius);
+            transform: scaleX(-1);
+            /* Mirror for front camera */
+            width: 100%;
+            height: auto;
+            transition: filter 0.5s ease;
+        }
+
+        #camera-stream.blur,
+        #pose-canvas.blur {
+            filter: blur(8px);
+            -webkit-filter: blur(8px);
+        }
+
+        /* Person Detection Overlay */
+        .person-detection-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 10;
+            border-radius: var(--radius);
+            opacity: 0;
+            transition: opacity 0.5s ease;
+            pointer-events: none;
+            /* Allow clicks to pass through */
+        }
+
+        .person-detection-overlay.active {
+            opacity: 1;
+        }
+
+        .overlay-content {
+            text-align: center;
+            color: white;
+            padding: 30px;
+            background: rgba(0, 0, 0, 0.7);
+            border-radius: 15px;
+            max-width: 90%;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+            border: 2px solid var(--warning);
+            animation: bounce 2s infinite;
+            /* Ensure the overlay content is never blurred */
+            backdrop-filter: none;
+            -webkit-backdrop-filter: none;
+        }
+
+        .exercise-icon {
+            max-width: 200px;
+            max-height: 200px;
+            margin-bottom: 20px;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+            animation: float 3s ease-in-out infinite;
+        }
+
+        .overlay-content h3 {
+            margin-bottom: 15px;
+            font-size: 1.8rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .overlay-content p {
+            font-size: 1.2rem;
+            line-height: 1.5;
+            margin-bottom: 10px;
+        }
+
+        .exercise-name {
+            font-size: 1.4rem;
+            font-weight: bold;
+            color: var(--success);
+            margin: 10px 0;
+            text-transform: capitalize;
+        }
+
+        @keyframes bounce {
+
+            0%,
+            100% {
+                transform: translateY(0);
+            }
+
+            50% {
+                transform: translateY(-10px);
+            }
+        }
+
+        @keyframes float {
+            0% {
+                transform: translateY(0px);
+            }
+
+            50% {
+                transform: translateY(-10px);
+            }
+
+            100% {
+                transform: translateY(0px);
+            }
+        }
+
+        .feedback-panel {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: var(--radius);
+            padding: 20px;
+            margin: 30px 0;
+            text-align: center;
+            box-shadow: var(--shadow);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .feedback-panel h3 {
+            margin-bottom: 15px;
+            font-size: 1.4rem;
+        }
+
+        .feedback-text {
+            font-size: 1.2rem;
+            min-height: 30px;
+            color: var(--success);
+        }
+
+        /* Voice Feedback Styles */
+        .voice-indicator {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(76, 201, 240, 0.9);
+            color: white;
+            padding: 10px 15px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            z-index: 1000;
+            display: none;
+            align-items: center;
+            gap: 8px;
+            animation: pulse 2s infinite;
+        }
+
+        .voice-indicator.playing {
+            display: flex;
+        }
+
+        .voice-indicator i {
+            font-size: 1.2rem;
+        }
+
+        /* Animations */
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+            }
+
+            to {
+                opacity: 1;
+            }
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes pulse {
+            0% {
+                box-shadow: 0 0 0 0 rgba(76, 201, 240, 0.4);
+            }
+
+            70% {
+                box-shadow: 0 0 0 10px rgba(76, 201, 240, 0);
+            }
+
+            100% {
+                box-shadow: 0 0 0 0 rgba(76, 201, 240, 0);
+            }
+        }
+
+        /* Mobile Info Panel Styles */
+        .mobile-info-panel {
+            display: none;
+            background: rgba(0, 0, 0, 0.7);
+            border-radius: 10px;
+            padding: 15px;
+            margin: 0 15px;
+            z-index: 2;
+        }
+
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 1rem;
+        }
+
+        .info-row:last-child {
+            margin-bottom: 0;
+        }
+
+        .info-label {
+            font-weight: bold;
+            color: #4cc9f0;
+            width: 80px;
+        }
+
+        /* Mobile styles */
+        @media (max-width: 768px) {
+
+            html,
+            body {
+                height: 100%;
+                margin: 0;
+                padding: 0;
+                overflow: hidden;
+            }
+
+            .container {
+                padding: 0;
+                height: 100vh;
+                max-width: 100%;
+                width: 100%;
+            }
+
+            #exercise-view {
+                height: 100vh;
+                display: none;
+                /* Keep hidden by default */
+                flex-direction: column;
+            }
+
+            /* Show exercise view when active */
+            #exercise-view.active {
+                display: flex;
+            }
+
+            /* Fixed header positioning - only visible when exercise is active */
+            .exercise-header {
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                z-index: 10;
+                background: rgba(0, 0, 0, 0.5);
+                padding: 10px;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: auto;
+            }
+
+            .exercise-header h1 {
+                font-size: 1.5rem;
+                margin: 0;
+                text-align: center;
+            }
+
+            /* Hide stop button in header on mobile */
+            .exercise-header #stop-btn {
+                display: none;
+            }
+
+            .exercise-container {
+                position: relative;
+                height: 100vh;
+                width: 100%;
+                display: flex;
+                flex-direction: column;
+            }
+
+            .video-feed {
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                z-index: 1;
+                margin: 0;
+            }
+
+            .video-placeholder {
+                width: 100%;
+                height: 100%;
+                border-radius: 0;
+                overflow: hidden;
+            }
+
+            /* Updated camera and canvas styling for mobile */
+            #camera-stream,
+            #pose-canvas {
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                object-fit: cover;
+                border-radius: 0;
+                transform: scaleX(-1);
+                z-index: 1;
+                /* Mirror for front camera */
+            }
+
+            /* Hide desktop panels on mobile */
+            .stats-panel,
+            .feedback-panel {
+                display: none;
+            }
+
+            /* Show mobile info panel */
+            .mobile-info-panel {
+                display: block !important;
+                position: absolute;
+                bottom: 70px;
+                left: 0;
+                right: 0;
+                z-index: 2;
+                margin: 0 15px;
+                background: rgba(0, 0, 0, 0.7);
+                border-radius: 10px;
+                padding: 15px;
+            }
+
+            .info-row {
+                display: flex;
+                justify-content: space-between;
+                margin-bottom: 8px;
+                font-size: 1rem;
+            }
+
+            .info-row:last-child {
+                margin-bottom: 0;
+            }
+
+            .info-label {
+                font-weight: bold;
+                color: #4cc9f0;
+                width: 80px;
+            }
+
+            /* Voice indicator for mobile */
+            .voice-indicator {
+                top: 10px;
+                right: 10px;
+                font-size: 0.8rem;
+                padding: 8px 12px;
+            }
+
+            /* Fixed stop button at bottom - only visible when exercise is active */
+            #stop-btn {
+                position: fixed;
+                bottom: 10px;
+                left: 50%;
+                transform: translateX(-50%);
+                z-index: 20;
+                max-width: 90%;
+                width: 90%;
+                margin: 0;
+                display: none;
+                /* Keep hidden by default */
+            }
+
+            /* Show stop button when exercise is active */
+            #exercise-view.active #stop-btn {
+                display: block;
+            }
+
+            .loader,
+            .camera-permission {
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                z-index: 100;
+                background: rgba(0, 0, 0, 0.9);
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+            }
+
+            .person-detection-overlay {
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                z-index: 3;
+            }
+
+            .overlay-content {
+                background: rgba(0, 0, 0, 0.8);
+                padding: 20px;
+                border-radius: 10px;
+                max-width: 90%;
+            }
+
+            .exercise-icon {
+                max-width: 150px;
+                max-height: 150px;
+            }
+
+            .overlay-content h3 {
+                font-size: 1.5rem;
+            }
+
+            .overlay-content p {
+                font-size: 1rem;
+            }
+
+            .exercise-name {
+                font-size: 1.2rem;
+            }
+        }
+
+        /* Loading Animation */
+        .loader {
+            display: none;
+            text-align: center;
+            margin: 30px 0;
+        }
+
+        .loader-spinner {
+            width: 50px;
+            height: 50px;
+            border: 5px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top: 5px solid var(--primary);
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* Camera Permission Prompt */
+        .camera-permission {
+            text-align: center;
+            padding: 20px;
+            background: rgba(247, 37, 133, 0.2);
+            border-radius: var(--radius);
+            margin: 20px 0;
+            display: none;
+        }
+
+        .camera-permission i {
+            font-size: 3rem;
+            margin-bottom: 15px;
+            color: var(--warning);
+        }
+
+        /* Pulse animation for rep counter */
+        @keyframes pulseScale {
+
+            0%,
+            100% {
+                transform: scale(1);
+            }
+
+            50% {
+                transform: scale(1.1);
+            }
+        }
+
+        #rep-counter-mobile.pulse {
+            animation: pulseScale 0.5s ease-in-out;
+            display: inline-block;
+        }
+
+        img#exercise-icon {
+            background: white;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Voice Feedback Indicator -->
+    <div id="voice-indicator" class="voice-indicator">
+        <i class="fas fa-volume-up"></i>
+        <span>Voice Feedback</span>
+    </div>
+
+    <div class="container">
+        <!-- Exercise View -->
+        <div id="exercise-view">
+            <header class="exercise-header">
+                <button id="stop-btn">Stop Exercise</button>
+            </header>
+
+            <div class="loader">
+                <div class="loader-spinner"></div>
+                <p>Initializing camera and pose detection...</p>
+            </div>
+
+            <div class="camera-permission">
+                <i class="fas fa-camera"></i>
+                <h3>Camera Access Required</h3>
+                <p>Please allow camera access to use the posture detection feature</p>
+            </div>
+
+            <main class="exercise-container">
+                <div class="stats-panel">
+                    <div class="stat-box">
+                        <h3 id="counter-label">REPS</h3>
+                        <div id="rep-counter" class="counter">0</div>
+                    </div>
+
+                    <div class="stat-box">
+                        <h3>FORM</h3>
+                        <div id="form-status" class="status">OK</div>
+                    </div>
+                </div>
+
+                <div class="mobile-info-panel">
+                    <div class="info-row">
+                        <span class="info-label">Exercise:</span>
+                        <span id="exercise-name-mobile">Exercise</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label" id="counter-label-mobile">Reps:</span>
+                        <span id="rep-counter-mobile">0</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Posture:</span>
+                        <span id="form-status-mobile">OK</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Feedback:</span>
+                        <span id="feedback-text-mobile">No feedback yet</span>
+                    </div>
+                </div>
+
+                <div class="video-feed">
+                    <div class="video-placeholder">
+                        <video id="camera-stream" autoplay playsinline></video>
+                        <canvas id="pose-canvas"></canvas>
+                        <div class="person-detection-overlay">
+                            <div class="overlay-content">
+                                <img id="exercise-icon" class="exercise-icon" src="" alt="Exercise Icon">
+                                <h3>POSITION YOURSELF</h3>
+                                <p>Please make sure your entire body is visible in the frame</p>
+                                <div class="exercise-name" id="overlay-exercise-name">Exercise</div>
+                                <p id="no-person-text">No person detected</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="feedback-panel">
+                    <h3>FEEDBACK</h3>
+                    <div id="feedback-text" class="feedback-text">No feedback yet</div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- MediaPipe Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+
+    <script>
+        // Configuration
+        const API_BASE_URL = 'http://127.0.0.1:8000/v1/exercise';
+
+        const exerciseIcons = {
+            'barbell_biceps_curl_rules': '/images/exercises/barbel-curls.png',
+            'squat_rules': '/images/exercises/squat.png',
+            'pushup_rules': '/images/exercises/pushups.png',
+            'plank_rules': '/images/exercises/plank.png',
+            'deadlift_rules': '/images/exercises/deadlift.png'
+        };
+
+        const exerciseDisplayNames = {
+            'barbell_biceps_curl_rules': 'Barbell Biceps Curl',
+            'squat_rules': 'Squat',
+            'pushup_rules': 'Push-Up',
+            'plank_rules': 'Plank',
+            'deadlift_rules': 'Deadlift'
+        };
+
+        // Global variables
+        let ws = null;
+        let pose = null;
+        let camera = null;
+        let sessionId = null;
+        let exerciseName = null;
+        let personDetected = true;
+        let missingFrames = 0;
+        const MISSING_THRESHOLD = 0;
+        let exerciseActive = false;
+
+        // Camera jerk detection variables
+        let lastKeypoints = null;
+        let lastFrameTimestamp = null;
+        let cameraJerkThreshold = 0.2;
+        let isCameraJerk = false;
+        let jerkRecoveryFrames = 0;
+        const JERK_RECOVERY_COUNT = 30;
+
+        // Whole body detection variables
+        const bodyVisibilityThreshold = 0.7;
+        const keyPointVisibilityThreshold = 0.5;
+        let wholeBodyDetected = false;
+
+        // Camera ready flags
+        let cameraReady = false;
+        let firstPoseResultReceived = false;
+        
+        // Timer variables for plank exercises
+        let timerInterval = null;
+        let elapsedTime = 0;
+        let timerRunning = false;
+        let isPlankExercise = false;
+        let lastTimerUpdate = 0;
+        let overlayActive = false;
+        const validPlankFeedbacks = [
+            "Doing Good, Maintain body",
+            "Hips too high - lower them to be perfectly straight!",
+            "Hips sagging - lift them up slightly!",
+            "Perfect plank!",
+            "Doing Good Keep it"
+        ];
+
+        class FeedbackVoice {
+            constructor() {
+                this.synth = window.speechSynthesis;
+                this.currentUtterance = null;
+                this.lastFeedback = '';
+                this.isSpeaking = false;
+                this.feedbackCooldown = 2000; 
+            }
+
+            speak(feedbackText) {
+                if (!feedbackText) return;
+
+                if (feedbackText === "No feedback yet" || feedbackText === "No person detected") {
+                    return;
+                }
+
+                const now = Date.now();
+                const isSameFeedback = feedbackText === this.lastFeedback;
+                const isInCooldown = (now - this.lastSpeakTime) < this.feedbackCooldown;
+
+                // Skip if same feedback in cooldown
+                if (isSameFeedback && isInCooldown) {
+                    console.log(` Feedback skipping repetitive: "${feedbackText}"`);
+                    return;
+                }
+
+                console.log(` FEEDBACK VOICE: "${feedbackText}"`);
+
+                // Stop any current feedback speech
+                if (this.isSpeaking) {
+                    this.synth.cancel();
+                }
+
+                this.currentUtterance = new SpeechSynthesisUtterance(feedbackText);
+                
+                // Optimize for feedback - clear and calm
+                this.currentUtterance.rate = 0.9;
+                this.currentUtterance.pitch = 1.0;
+                this.currentUtterance.volume = 0.8;
+                
+                this.currentUtterance.onstart = () => {
+                    this.isSpeaking = true;
+                    this.lastSpeakTime = Date.now();
+                    console.log(' Feedback voice started');
+                };
+                
+                this.currentUtterance.onend = () => {
+                    this.isSpeaking = false;
+                    this.lastFeedback = feedbackText;
+                    console.log(' Feedback voice ended');
+                };
+                
+                this.currentUtterance.onerror = (event) => {
+                    this.isSpeaking = false;
+                    if (event.error !== 'interrupted') {
+                        console.error(' Feedback voice error:', event.error);
+                    }
+                };
+
+                this.synth.speak(this.currentUtterance);
+            }
+
+            stop() {
+                if (this.isSpeaking) {
+                    this.synth.cancel();
+                    this.isSpeaking = false;
+                }
+            }
+
+            reset() {
+                this.lastFeedback = '';
+                this.stop();
+            }
+        }
+
+        class RepVoice {
+            constructor() {
+                this.synth = window.speechSynthesis;
+                this.currentUtterance = null;
+                this.lastRepAnnounced = 0;
+                this.isSpeaking = false;
+                this.repCooldown = 300; 
+                this.lastSpeakTime = 0;
+            }
+
+            speak(repCount) {
+                if (repCount === 0) return;
+
+                const now = Date.now();
+                const isInCooldown = (now - this.lastSpeakTime) < this.repCooldown;
+
+                console.log(` REP CHECK: ${repCount}, lastAnnounced: ${this.lastRepAnnounced}, speaking: ${this.isSpeaking}, cooldown: ${isInCooldown}`);
+
+                if (repCount === this.lastRepAnnounced && this.isSpeaking && isInCooldown) {
+                    console.log(` Skipping - already speaking rep ${repCount}`);
+                    return;
+                }
+
+                console.log(` SPEAKING REP: ${repCount}`);
+
+                // Stop any current speech
+                if (this.isSpeaking) {
+                    this.synth.cancel();
+                }
+
+                const repText = `Rep ${repCount}`;
+                this.currentUtterance = new SpeechSynthesisUtterance(repText);
+                
+                this.currentUtterance.rate = 1.1;
+                this.currentUtterance.pitch = 1.2;
+                this.currentUtterance.volume = 0.9; // Increased volume
+                
+                this.currentUtterance.onstart = () => {
+                    this.isSpeaking = true;
+                    this.lastSpeakTime = Date.now();
+                    console.log(` Rep voice STARTED: ${repCount}`);
+                };
+                
+                this.currentUtterance.onend = () => {
+                    this.isSpeaking = false;
+                    this.lastRepAnnounced = repCount;
+                    console.log(` Rep voice ENDED: ${repCount}, lastRepAnnounced: ${this.lastRepAnnounced}`);
+                };
+                
+                this.currentUtterance.onerror = (event) => {
+                    this.isSpeaking = false;
+                    this.lastRepAnnounced = repCount; 
+                    if (event.error !== 'interrupted') {
+                        console.error(' Rep voice error:', event.error);
+                    }
+                };
+
+                this.synth.speak(this.currentUtterance);
+            }
+
+            stop() {
+                if (this.isSpeaking) {
+                    this.synth.cancel();
+                    this.isSpeaking = false;
+                }
+            }
+
+            reset() {
+                this.lastRepAnnounced = 0;
+                this.lastSpeakTime = 0;
+                this.stop();
+            }
+        }
+        // Initialize separate voice systems
+        const feedbackVoice = new FeedbackVoice();
+        const repVoice = new RepVoice();
+
+        // Tracking variables
+        let lastFeedbackText = "";
+        let lastFormStatus = "";
+        let lastReps = -1;
+
+        // DOM Elements
+        const exerciseView = document.getElementById('exercise-view');
+        const stopBtn = document.getElementById('stop-btn');
+        const repCounter = document.getElementById('rep-counter');
+        const formStatus = document.getElementById('form-status');
+        const feedbackText = document.getElementById('feedback-text');
+        const cameraStream = document.getElementById('camera-stream');
+        const poseCanvas = document.getElementById('pose-canvas');
+        const loader = document.querySelector('.loader');
+        const cameraPermission = document.querySelector('.camera-permission');
+        const personDetectionOverlay = document.querySelector('.person-detection-overlay');
+        const videoPlaceholder = document.querySelector('.video-placeholder');
+        const counterLabel = document.getElementById('counter-label');
+        const counterLabelMobile = document.getElementById('counter-label-mobile');
+        const exerciseIcon = document.getElementById('exercise-icon');
+        const overlayExerciseName = document.getElementById('overlay-exercise-name');
+        const noPersonText = document.getElementById('no-person-text');
+
+        console.log(' Exercise page loaded - initializing...', exerciseIcon);
+
+        // Check if whole body is visible
+        function isWholeBodyVisible(landmarks) {
+            if (!landmarks || landmarks.length === 0) return false;
+
+            const keyPointIndices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
+            let visiblePoints = 0;
+
+            for (const index of keyPointIndices) {
+                if (index < landmarks.length) {
+                    const landmark = landmarks[index];
+                    if (landmark.visibility >= keyPointVisibilityThreshold) {
+                        visiblePoints++;
+                    }
+                }
+            }
+
+            const visibilityPercentage = visiblePoints / keyPointIndices.length;
+            return visibilityPercentage >= bodyVisibilityThreshold;
+        }
+
+        // Initialize the application
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log(' Initializing exercise with SEPARATE voice systems...');
+
+            const urlParams = new URLSearchParams(window.location.search);
+            const urlSessionId = urlParams.get('session_id');
+            const urlExerciseName = urlParams.get('exercise');
+            
+            if (urlSessionId && urlExerciseName) {
+                sessionId = urlSessionId;
+                exerciseName = urlExerciseName.toLowerCase();
+                
+                isPlankExercise = exerciseName.includes('plank');
+                
+                if (isPlankExercise) {
+                    counterLabel.textContent = 'TIME';
+                    counterLabelMobile.textContent = 'Time:';
+                }
+                
+                exerciseActive = true;
+                showExerciseView();
+                initializeExercise();
+            } else {
+                showError("No session information found. Please provide a valid session ID and exercise name in the URL.");
+            }
+
+            stopBtn.addEventListener('click', stopExercise);
+        });
+
+        function showError(message) {
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'error-message';
+            errorDiv.style.position = 'fixed';
+            errorDiv.style.top = '50%';
+            errorDiv.style.left = '50%';
+            errorDiv.style.transform = 'translate(-50%, -50%)';
+            errorDiv.style.background = '#282828';
+            errorDiv.style.color = 'white';
+            errorDiv.style.padding = '20px';
+            errorDiv.style.borderRadius = '10px';
+            errorDiv.style.textAlign = 'center';
+            errorDiv.style.zIndex = '1000';
+            errorDiv.style.width = '80%';
+            errorDiv.innerHTML = `<h3>Error</h3><p>${message}</p>`;
+
+            document.body.appendChild(errorDiv);
+
+            const closeButton = document.createElement('button');
+            closeButton.textContent = 'Close';
+            closeButton.style.marginTop = '20px';
+            closeButton.style.backgroundColor = '#118076';
+            closeButton.onclick = function () {
+                window.ReactNativeWebView.postMessage(JSON.stringify({ event: "stop_exercise" }))
+                document.body.removeChild(errorDiv);
+            };
+
+            errorDiv.appendChild(closeButton);
+        }
+
+        // Reset exercise state
+        function resetExerciseState() {
+            repCounter.textContent = "0";
+            formStatus.textContent = "OK";
+            formStatus.className = "status good";
+            feedbackText.textContent = "No feedback yet";
+
+            const mobileRepCounter = document.getElementById('rep-counter-mobile');
+            const mobileFormStatus = document.getElementById('form-status-mobile');
+            const mobileFeedbackText = document.getElementById('feedback-text-mobile');
+            const mobileExerciseName = document.getElementById('exercise-name-mobile');
+
+            if (mobileRepCounter) mobileRepCounter.textContent = "0";
+            if (mobileFormStatus) mobileFormStatus.textContent = "OK";
+            if (mobileFeedbackText) mobileFeedbackText.textContent = "No feedback yet";
+            if (mobileExerciseName) mobileExerciseName.textContent = exerciseDisplayNames[exerciseName] || "Exercise";
+
+            // Reset voice systems
+            feedbackVoice.reset();
+            repVoice.reset();
+
+            personDetected = true;
+            missingFrames = 0;
+            wholeBodyDetected = false;
+            lastKeypoints = null;
+            lastFrameTimestamp = null;
+            isCameraJerk = false;
+            jerkRecoveryFrames = 0;
+            overlayActive = false;
+
+            lastFeedbackText = "";
+            lastFormStatus = "";
+            lastReps = -1;
+
+            personDetectionOverlay.classList.remove('active');
+            cameraStream.classList.remove('blur');
+            poseCanvas.classList.remove('blur');
+            
+            elapsedTime = 0;
+            timerRunning = false;
+            if (timerInterval) {
+                clearInterval(timerInterval);
+                timerInterval = null;
+            }
+            updateTimerDisplay();
+            
+            // Set the exercise icon and name in the overlay
+            if (exerciseIcons[exerciseName]) {
+                exerciseIcon.src = exerciseIcons[exerciseName];
+                exerciseIcon.alt = exerciseDisplayNames[exerciseName] + ' Icon';
+            }
+            if (overlayExerciseName) {
+                overlayExerciseName.textContent = exerciseDisplayNames[exerciseName] || exerciseName;
+            }
+        }
+
+        // Show exercise view with animation
+        function showExerciseView() {
+            exerciseView.style.display = 'flex';
+            exerciseView.classList.add('active');
+            loader.style.display = 'flex';
+            cameraPermission.style.display = 'none';
+            cameraReady = false;
+            firstPoseResultReceived = false;
+        }
+
+        // Initialize exercise monitoring
+        function initializeExercise() {
+            if (!pose) {
+                initializeMediaPipe();
+            }
+            initializeWebSocket();
+
+            if (window.innerWidth <= 768) {
+                const mobileInfoPanel = document.querySelector('.mobile-info-panel');
+                if (mobileInfoPanel) {
+                    mobileInfoPanel.style.display = 'block';
+                }
+            }
+        }
+
+        // Initialize MediaPipe Pose
+        function initializeMediaPipe() {
+            const canvasCtx = poseCanvas.getContext('2d');
+
+            pose = new Pose({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+            });
+
+            pose.setOptions({
+                modelComplexity: 0,
+                smoothLandmarks: true,
+                enableSegmentation: false,
+                smoothSegmentation: false,
+                minDetectionConfidence: 0.7,
+                minTrackingConfidence: 0.7
+            });
+
+            pose.onResults(onPoseResults);
+
+            if (!camera) {
+                const constraints = {
+                    video: {
+                        facingMode: 'user',
+                        width: { ideal: 640, max: 1280 },
+                        height: { ideal: 480, max: 720 }
+                    }
+                };
+
+                camera = new Camera(cameraStream, {
+                    onFrame: async () => {
+                        try {
+                            if (exerciseActive) {
+                                await pose.send({ image: cameraStream });
+                            }
+                        } catch (error) {
+                            console.error('Error processing frame:', error);
+                        }
+                    }
+                });
+
+                camera.start(constraints)
+                    .then(() => {
+                        console.log('Camera started successfully');
+
+                        const waitForVideo = setInterval(() => {
+                            if (cameraStream.videoWidth > 0 && cameraStream.videoHeight > 0) {
+                                clearInterval(waitForVideo);
+
+                                poseCanvas.width = cameraStream.videoWidth;
+                                poseCanvas.height = cameraStream.videoHeight;
+                                poseCanvas.style.width = '100%';
+                                poseCanvas.style.height = '100%';
+
+                                setTimeout(() => {
+                                    if (!firstPoseResultReceived) {
+                                        console.log('No pose results received after 5 seconds, hiding loader anyway');
+                                        loader.style.display = 'none';
+                                        cameraReady = true;
+                                    }
+                                }, 5000);
+                            }
+                        }, 100);
+                    })
+                    .catch(error => {
+                        console.error('Camera error:', error);
+                        loader.style.display = 'none';
+                        cameraPermission.style.display = 'block';
+                    });
+            }
+        }
+
+        // Process pose results
+        function onPoseResults(results) {
+            if (!firstPoseResultReceived && results.poseLandmarks) {
+                firstPoseResultReceived = true;
+                loader.style.display = 'none';
+                cameraReady = true;
+                console.log('First pose result received, camera is ready');
+            }
+
+            let canvasCtx = null;
+            try {
+                canvasCtx = poseCanvas.getContext('2d');
+                const currentTimestamp = Date.now();
+
+                canvasCtx.save();
+                canvasCtx.clearRect(0, 0, poseCanvas.width, poseCanvas.height);
+                canvasCtx.drawImage(results.image, 0, 0, poseCanvas.width, poseCanvas.height);
+
+                if (results.poseLandmarks) {
+                    missingFrames = 0;
+
+                    if (!personDetected) {
+                        personDetected = true;
+                        formStatus.textContent = "OK";
+                        formStatus.className = "status good";
+                        feedbackText.textContent = "Person detected";
+                    }
+
+                    drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, { color: '#00FF00', lineWidth: 2 });
+                    drawLandmarks(canvasCtx, results.poseLandmarks, { color: '#FF0000', lineWidth: 1, radius: 3 });
+
+                    const keypoints = results.poseLandmarks.map(landmark => [
+                        landmark.x,
+                        landmark.y,
+                        landmark.z || 0,
+                        landmark.visibility || 1.0
+                    ]);
+
+                    const bodyVisible = isWholeBodyVisible(results.poseLandmarks);
+                    if (bodyVisible !== wholeBodyDetected) {
+                        wholeBodyDetected = bodyVisible;
+                        updateWholeBodyDetectionUI(wholeBodyDetected);
+                    }
+
+                    if (wholeBodyDetected) {
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            ws.send(JSON.stringify({
+                                type: "keypoints",
+                                keypoints: keypoints,
+                                exercise: exerciseName
+                            }));
+                        }
+                    }
+
+                    lastKeypoints = keypoints;
+                    lastFrameTimestamp = currentTimestamp;
+
+                } else {
+                    missingFrames++;
+                    lastKeypoints = null;
+                    lastFrameTimestamp = null;
+                    isCameraJerk = false;
+                    jerkRecoveryFrames = 0;
+                    wholeBodyDetected = false;
+                    updateWholeBodyDetectionUI(false);
+
+                    if (missingFrames >= MISSING_THRESHOLD && personDetected) {
+                        personDetected = false;
+                        handleNoPersonDetected();
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            ws.send(JSON.stringify({ type: "no_person" }));
+                        }
+                    }
+                }
+
+                canvasCtx.restore();
+            } catch (error) {
+                console.error('Error in onPoseResults:', error);
+                if (canvasCtx) {
+                    try {
+                        canvasCtx.restore();
+                    } catch (e) {
+                        console.error('Error restoring canvas context:', e);
+                    }
+                }
+            }
+        }
+
+        // Update whole body detection UI
+        function updateWholeBodyDetectionUI(isVisible) {
+            if (isVisible) {
+                personDetectionOverlay.classList.remove('active');
+                cameraStream.classList.remove('blur');
+                poseCanvas.classList.remove('blur');
+                overlayActive = false;
+            } else {
+                personDetectionOverlay.classList.add('active');
+                cameraStream.classList.add('blur');
+                poseCanvas.classList.add('blur');
+                overlayActive = true;
+                
+                if (timerRunning && isPlankExercise) {
+                    stopTimer();
+                }
+            }
+        }
+
+        // Handle no person detected
+        function handleNoPersonDetected() {
+            formStatus.textContent = "NO PERSON";
+            formStatus.className = "status bad";
+            feedbackText.textContent = "No person detected";
+
+            const mobileFormStatus = document.getElementById('form-status-mobile');
+            const mobileFeedbackText = document.getElementById('feedback-text-mobile');
+
+            if (mobileFormStatus) {
+                mobileFormStatus.textContent = "NO PERSON";
+                mobileFormStatus.className = "bad";
+            }
+
+            if (mobileFeedbackText) {
+                mobileFeedbackText.textContent = "No person detected";
+            }
+            
+            if (timerRunning && isPlankExercise) {
+                stopTimer();
+            }
+        }
+
+        // Initialize WebSocket connection
+        function initializeWebSocket() {
+            const wsUrl = `${API_BASE_URL.replace(/^http/, 'ws')}/ws?session_id=${sessionId}`;
+            
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected successfully');
+                resetExerciseState();
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    console.log('WebSocket message received:', data);
+                    updateUI(data);
+                } catch (error) {
+                    console.error("WebSocket parse error:", error);
+                }
+            };
+
+            ws.onclose = (event) => {
+                console.log('WebSocket closed', { code: event.code, reason: event.reason });
+                
+                if (exerciseActive) {
+                    console.log('Attempting to reconnect...');
+                    setTimeout(initializeWebSocket, 2000);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error("WebSocket error:", error);
+            };
+        }
+
+        // Format time in MM:SS format
+        function formatTime(milliseconds) {
+            const totalSeconds = Math.floor(milliseconds / 1000);
+            const minutes = Math.floor(totalSeconds / 60);
+            const seconds = totalSeconds % 60;
+            return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        }
+
+        // Update timer display
+        function updateTimerDisplay() {
+            if (isPlankExercise) {
+                repCounter.textContent = formatTime(elapsedTime);
+                const mobileRepCounter = document.getElementById('rep-counter-mobile');
+                if (mobileRepCounter) {
+                    mobileRepCounter.textContent = formatTime(elapsedTime);
+                }
+            }
+        }
+
+        // Start timer
+        function startTimer() {
+            if (!isPlankExercise || timerRunning || overlayActive) return;
+            
+            timerRunning = true;
+            lastTimerUpdate = Date.now();
+            
+            timerInterval = setInterval(() => {
+                const now = Date.now();
+                const deltaTime = now - lastTimerUpdate;
+                elapsedTime += deltaTime;
+                lastTimerUpdate = now;
+                updateTimerDisplay();
+            }, 100);
+        }
+
+        // Stop timer
+        function stopTimer() {
+            if (!isPlankExercise || !timerRunning) return;
+            
+            timerRunning = false;
+            clearInterval(timerInterval);
+        }
+        total_feedback = [];
+        
+        // Update UI with exercise data
+        function updateUI(data) {
+            if (window.innerWidth <= 768) {
+                console.log('Mobile UI update called with:', data);
+            }
+            
+            if (data.exercise) {
+                const mobileExerciseName = document.getElementById('exercise-name-mobile');
+                if (mobileExerciseName) {
+                    mobileExerciseName.textContent = data.exercise;
+                }
+            }
+            
+            // Handle timer for plank exercises
+            if (isPlankExercise && data.feedback !== undefined) {
+                const feedbackTextLower = data.feedback.toLowerCase();
+                const isValidPlankFeedback = validPlankFeedbacks.some(feedback => 
+                    feedbackTextLower.includes(feedback.toLowerCase())
+                );
+                
+                if (isValidPlankFeedback && !overlayActive) {
+                    if (!timerRunning) {
+                        startTimer();
+                    }
+                } else {
+                    if (timerRunning) {
+                        stopTimer();
+                    }
+                }
+            }
+            
+            // IMMEDIATE REP VOICE 
+            if (data.reps !== undefined && !isPlankExercise) {
+                
+                    console.log(` Rep data received: ${data.reps}, lastReps: ${lastReps}, repVoice.lastRepAnnounced: ${repVoice.lastRepAnnounced}`);
+                
+                    // Update UI immediately
+                    repCounter.textContent = data.reps;
+                    
+                    // Update mobile UI
+                    const mobileRepCounter = document.getElementById('rep-counter-mobile');
+                    if (mobileRepCounter) {
+                        mobileRepCounter.textContent = data.reps;
+                        mobileRepCounter.classList.add('pulse');
+                        setTimeout(() => mobileRepCounter.classList.remove('pulse'), 1000);
+                    }
+            }
+            
+            if (data.form_ok !== undefined) {
+                if (personDetected) {
+                    const statusText = data.form_ok ? "OK" : "FIX";
+                    
+                    if (statusText !== lastFormStatus) {
+                        lastFormStatus = statusText;
+                        
+                        formStatus.textContent = statusText;
+                        formStatus.className = "status " + (data.form_ok ? "good" : "bad");
+
+                        const mobileFormStatus = document.getElementById('form-status-mobile');
+                        if (mobileFormStatus) {
+                            mobileFormStatus.textContent = statusText;
+                            mobileFormStatus.className = data.form_ok ? "good" : "bad";
+                        }
+                    }
+                }
+            }
+            
+            // FEEDBACK VOICE - Speak when feedback changes
+            total_feedback.push(data.feedback);
+            console.log(" Total feedbacks so far: ", total_feedback.length);
+            if (data.feedback !== undefined) {
+                if (personDetected) {
+                    const currentFeedback = data.feedback || "No feedback yet";
+                    
+                    // Always update the UI text immediately
+                    if (currentFeedback !== lastFeedbackText) {
+                        lastFeedbackText = currentFeedback;
+                        
+                        feedbackText.textContent = currentFeedback;
+
+                        // Add animation for feedback changes
+                        feedbackText.style.opacity = '0';
+                        setTimeout(() => {
+                            feedbackText.style.transition = 'opacity 0.5s ease';
+                            feedbackText.style.opacity = '1';
+                        }, 100);
+
+                        const mobileFeedbackText = document.getElementById('feedback-text-mobile');
+                        if (mobileFeedbackText) {
+                            mobileFeedbackText.textContent = currentFeedback;
+
+                            // Add animation for feedback changes
+                            mobileFeedbackText.style.opacity = '0';
+                            setTimeout(() => {
+                                mobileFeedbackText.style.transition = 'opacity 0.5s ease';
+                                mobileFeedbackText.style.opacity = '1';
+                            }, 100);
+                        }
+                        // check after every 3 feedback even if there are 200 feedback
+                        if (total_feedback.length % 3 === 0 && !isPlankExercise) { 
+                                feedbackVoice.speak(currentFeedback+ " Total reps are " +data.reps);
+                           
+                            // feedbackVoice.speak(currentFeedback+ " Total reps are " +data.reps);
+                        }else if(isPlankExercise && total_feedback.length % 6 === 0){
+                                feedbackVoice.speak(currentFeedback+" time is " + formatTime(elapsedTime));
+                        }
+
+                        // USE FEEDBACK VOICE for form feedback
+                        console.log(` FEEDBACK CHANGED: Calling feedbackVoice.speak("${currentFeedback}")`);
+                        // feedbackVoice.speak(currentFeedback+ " Total reps are " +data.reps);
+                    }
+                }
+            }
+        }
+
+        // Stop exercise function
+        let exerciseStopped = false;
+        function stopExercise() {
+            window.ReactNativeWebView.postMessage(JSON.stringify({ event: "stop_exercise" }))
+            if (exerciseStopped) return;
+            exerciseStopped = true;
+            exerciseActive = false;
+
+            // Stop any playing voice
+            feedbackVoice.stop();
+            repVoice.stop();
+
+            if (timerRunning) {
+                stopTimer();
+            }
+
+            if (ws) {
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.close(1000, "Exercise stopped by user");
+                }
+                ws = null;
+            }
+
+            personDetectionOverlay.classList.remove('active');
+            cameraStream.classList.remove('blur');
+            poseCanvas.classList.remove('blur');
+
+            if (camera) {
+                camera.stop();
+                camera = null;
+            }
+
+            fetch(`${API_BASE_URL}/stop?session_id=${sessionId}`, {
+                method: "POST",
+                headers: { 'Content-Type': 'application/json' }
+            })
+                .then(response => {
+                    console.log('Stop API response:', response);
+                    return response.json();
+                })
+                .catch(error => console.error('Error stopping exercise:', error))
+                .finally(() => {
+                    window.history.replaceState({}, document.title, window.location.pathname);
+                    showError("Exercise has ended.");
+                    window.location.href = '/';
+                    exerciseStopped = false;
+                });
+        }
+    </script>
+</body>
+</html>
