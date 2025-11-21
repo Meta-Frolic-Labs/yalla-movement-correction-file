@@ -1321,8 +1321,8 @@
                         feedbackText.textContent = "Person detected";
                     }
 
-                    drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, { color: '#00FF00', lineWidth: 2 });
-                    drawLandmarks(canvasCtx, results.poseLandmarks, { color: '#FF0000', lineWidth: 1, radius: 3 });
+                    drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, { color: '#2E8B57', lineWidth: 2 });
+                    drawLandmarks(canvasCtx, results.poseLandmarks, { color: '#2E8B57', lineWidth: 1, radius: 3 });
 
                     const keypoints = results.poseLandmarks.map(landmark => [
                         landmark.x,
