@@ -814,10 +814,14 @@
 
     <script>
         // Configuration
-        const API_BASE_URL = 'https://yalla-ai.onlinetestingserver.com/v1/exercise';
+        const API_BASE_URL = 'http://localhost:8000/v1/exercise';
         
         const exerciseIcons = {
             'barbell biceps curl': '/images/exercises/barbel-curls.png',
+            'hammer_curl': '/images/exercises/hammercurl.png',
+            'hammer_curl_rules': '/images/exercises/hammercurl.png',
+            'shoulder front raise': '/images/exercises/shoulderfrontraises.png',
+            'shoulder_front_raise_rules': '/images/exercises/shoulderfrontraises.png',
             'squat': '/images/exercises/squat.png',
             'pushup': '/images/exercises/pushups.png',
             'plank': '/images/exercises/plank.png',
@@ -826,6 +830,10 @@
 
         const exerciseDisplayNames = {
             'barbell biceps curl': 'Barbell Biceps Curl',
+            'hammer_curl': 'Hammer Curl',
+            'hammer_curl_rules': 'Hammer Curl',
+            'shoulder front raise': 'Shoulder Front Raises',
+            'shoulder_front_raise_rules': 'Shoulder Front Raises',
             'squat': 'Squat',
             'pushup': 'Push-Up',
             'plank': 'Plank',
@@ -835,12 +843,20 @@
         function convertExerciseName(newName) {
             const conversions = {
                 'barbell_biceps_curl_rules': 'barbell biceps curl',
+                'hammer_curl_rules': 'hammer_curl',
+                'shoulder_front_raise_rules': 'shoulder front raise',
                 'squat_rules': 'squat',
                 'pushup_rules': 'pushup', 
                 'plank_rules': 'plank',
                 'deadlift_rules': 'deadlift'
             };
             return conversions[newName] || newName;
+        }
+
+        function supportsArmMode(exercise) {
+            const apiExercise = convertExerciseName(exercise);
+            return apiExercise === 'hammer_curl'
+                || apiExercise === 'shoulder front raise';
         }
         // Global variables
         let ws = null;
@@ -852,6 +868,8 @@
         let missingFrames = 0;
         const MISSING_THRESHOLD = 0;
         let exerciseActive = false;
+        let multiModeMode = 'single';
+        let multiModeSelectedSide = 'left';
 
         // Camera jerk detection variables
         let lastKeypoints = null;
@@ -1089,6 +1107,8 @@
             const urlParams = new URLSearchParams(window.location.search);
             const urlSessionId = urlParams.get('session_id');
             const urlExerciseName = urlParams.get('exercise');
+            multiModeMode = urlParams.get('mode') || 'single';
+            multiModeSelectedSide = urlParams.get('selected_side') || 'left';
             
             if (urlSessionId && urlExerciseName) {
                 sessionId = urlSessionId;
@@ -1143,7 +1163,10 @@
 
         // Reset exercise state
         function resetExerciseState() {
-            repCounter.textContent = "0";
+            const showAlternatingArmCounts =
+                supportsArmMode(exerciseName) && multiModeMode === 'alternating';
+            repCounter.textContent = showAlternatingArmCounts ? "0 | 0" : "0";
+            counterLabel.textContent = showAlternatingArmCounts ? "LEFT | RIGHT" : "REPS";
             formStatus.textContent = "OK";
             formStatus.className = "status good";
             feedbackText.textContent = "No feedback yet";
@@ -1153,7 +1176,14 @@
             const mobileFeedbackText = document.getElementById('feedback-text-mobile');
             const mobileExerciseName = document.getElementById('exercise-name-mobile');
 
-            if (mobileRepCounter) mobileRepCounter.textContent = "0";
+            if (mobileRepCounter) {
+                mobileRepCounter.textContent = showAlternatingArmCounts ? "0 | 0" : "0";
+            }
+            if (counterLabelMobile) {
+                counterLabelMobile.textContent = showAlternatingArmCounts
+                    ? "Left | Right:"
+                    : "Reps:";
+            }
             if (mobileFormStatus) mobileFormStatus.textContent = "OK";
             if (mobileFeedbackText) mobileFeedbackText.textContent = "No feedback yet";
             if (mobileExerciseName) mobileExerciseName.textContent = exerciseDisplayNames[exerciseName] || "Exercise";
@@ -1425,7 +1455,14 @@
 
         // Initialize WebSocket connection
         function initializeWebSocket() {
-            const wsUrl = `${API_BASE_URL.replace(/^http/, 'ws')}/ws?session_id=${sessionId}`;
+            const apiExercise = convertExerciseName(exerciseName);
+            const exerciseParam = apiExercise
+                ? `&exercise=${encodeURIComponent(apiExercise)}`
+                : '';
+            const armModeParams = supportsArmMode(apiExercise)
+                ? `&mode=${encodeURIComponent(multiModeMode)}&selected_side=${encodeURIComponent(multiModeSelectedSide)}`
+                : '';
+            const wsUrl = `${API_BASE_URL.replace(/^http/, 'ws')}/ws?session_id=${encodeURIComponent(sessionId)}${exerciseParam}${armModeParams}`;
             
             ws = new WebSocket(wsUrl);
 
@@ -1538,15 +1575,33 @@
                 
                     console.log(` Rep data received: ${data.reps}, lastReps: ${lastReps}, repVoice.lastRepAnnounced: ${repVoice.lastRepAnnounced}`);
                 
-                    // Update UI immediately
-                    repCounter.textContent = data.reps;
+                    const isIndependentArmExercise =
+                        supportsArmMode(data.exercise || exerciseName);
+                    const showAlternatingArmCounts = isIndependentArmExercise && (
+                        data.mode === 'alternating' || multiModeMode === 'alternating'
+                    );
+                    const displayedReps = showAlternatingArmCounts
+                        ? `${data.left_rep_count ?? 0} | ${data.right_rep_count ?? 0}`
+                        : data.reps;
+
+                    // Update UI immediately. Alternating arm exercises show one
+                    // counter per arm instead of their combined movement total.
+                    repCounter.textContent = displayedReps;
+                    counterLabel.textContent = showAlternatingArmCounts
+                        ? 'LEFT | RIGHT'
+                        : 'REPS';
                     
                     // Update mobile UI
                     const mobileRepCounter = document.getElementById('rep-counter-mobile');
                     if (mobileRepCounter) {
-                        mobileRepCounter.textContent = data.reps;
+                        mobileRepCounter.textContent = displayedReps;
                         mobileRepCounter.classList.add('pulse');
                         setTimeout(() => mobileRepCounter.classList.remove('pulse'), 1000);
+                    }
+                    if (counterLabelMobile) {
+                        counterLabelMobile.textContent = showAlternatingArmCounts
+                            ? 'Left | Right:'
+                            : 'Reps:';
                     }
             }
             
