@@ -858,6 +858,63 @@
             return apiExercise === 'hammer_curl'
                 || apiExercise === 'shoulder front raise';
         }
+
+        function updateSessionUrl() {
+            const params = new URLSearchParams({
+                session_id: String(sessionId),
+                exercise: exerciseName
+            });
+            if (supportsArmMode(exerciseName)) {
+                params.set('mode', multiModeMode);
+                params.set('selected_side', multiModeSelectedSide);
+            }
+            history.replaceState({}, '', `${window.location.pathname}?${params.toString()}`);
+        }
+
+        async function startExerciseFromUrl() {
+            const apiExercise = convertExerciseName(exerciseName);
+            if (!apiExercise) {
+                showError('Invalid exercise in URL.');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        exercise: apiExercise,
+                        mode: supportsArmMode(exerciseName) ? multiModeMode : 'single',
+                        selected_side: supportsArmMode(exerciseName)
+                            ? multiModeSelectedSide
+                            : 'left'
+                    })
+                });
+                const data = await response.json();
+
+                if (!response.ok) {
+                    const detail = Array.isArray(data.detail)
+                        ? data.detail.map((item) => item.msg || item).join(', ')
+                        : (data.detail || 'Failed to start exercise');
+                    showError(detail);
+                    return;
+                }
+
+                sessionId = data.session_id;
+                updateSessionUrl();
+                notifyHostApp({
+                    event: 'session_started',
+                    session_id: sessionId,
+                    exercise: apiExercise,
+                    mode: multiModeMode,
+                    selected_side: multiModeSelectedSide
+                });
+                initializeExercise();
+            } catch (error) {
+                console.error('Failed to start exercise:', error);
+                showError('Could not connect to the backend. Please try again.');
+            }
+        }
         // Global variables
         let ws = null;
         let pose = null;
@@ -1110,26 +1167,44 @@
             multiModeMode = urlParams.get('mode') || 'single';
             multiModeSelectedSide = urlParams.get('selected_side') || 'left';
             
-            if (urlSessionId && urlExerciseName) {
-                sessionId = urlSessionId;
+            if (urlExerciseName) {
                 exerciseName = urlExerciseName.toLowerCase();
-                
                 isPlankExercise = exerciseName.includes('plank');
-                
+
                 if (isPlankExercise) {
                     counterLabel.textContent = 'TIME';
                     counterLabelMobile.textContent = 'Time:';
                 }
-                
+
                 exerciseActive = true;
-                showExerciseView();
-                initializeExercise();
+
+                if (urlSessionId && urlParams.get('prestarted') === '1') {
+                    sessionId = urlSessionId;
+                    showExerciseView();
+                    initializeExercise();
+                } else {
+                    showExerciseView();
+                    startExerciseFromUrl();
+                }
+            } else if (urlSessionId) {
+                showError("Exercise name is missing from the URL.");
             } else {
-                showError("No session information found. Please provide a valid session ID and exercise name in the URL.");
+                showError("No exercise found. Please provide an exercise name in the URL.");
             }
 
             stopBtn.addEventListener('click', stopExercise);
         });
+
+        function notifyHostApp(payload) {
+            const reactNativeBridge = window.ReactNativeWebView;
+
+            if (reactNativeBridge && typeof reactNativeBridge.postMessage === 'function') {
+                const message = typeof payload === 'string'
+                    ? JSON.stringify({ event: payload })
+                    : JSON.stringify(payload);
+                reactNativeBridge.postMessage(message);
+            }
+        }
 
         function showError(message) {
             const errorDiv = document.createElement('div');
@@ -1154,7 +1229,7 @@
             closeButton.style.marginTop = '20px';
             closeButton.style.backgroundColor = '#118076';
             closeButton.onclick = function () {
-                window.ReactNativeWebView.postMessage(JSON.stringify({ event: "stop_exercise" }))
+                notifyHostApp("stop_exercise");
                 document.body.removeChild(errorDiv);
             };
 
@@ -1675,7 +1750,7 @@
         // Stop exercise function
         let exerciseStopped = false;
         function stopExercise() {
-            window.ReactNativeWebView.postMessage(JSON.stringify({ event: "stop_exercise" }))
+            notifyHostApp("stop_exercise");
             if (exerciseStopped) return;
             exerciseStopped = true;
             exerciseActive = false;
