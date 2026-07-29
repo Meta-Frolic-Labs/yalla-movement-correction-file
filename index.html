@@ -882,7 +882,11 @@
         // Whole body detection variables
         const bodyVisibilityThreshold = 0.7;
         const keyPointVisibilityThreshold = 0.5;
+        const VALID_POSE_COLOR = '#00FF00';
+        const INVALID_POSE_COLOR = '#FF2D2D';
         let wholeBodyDetected = false;
+        let latestFormOk = false;
+        let formValidationReceived = false;
 
         // Camera ready flags
         let cameraReady = false;
@@ -1351,8 +1355,30 @@
                         feedbackText.textContent = "Person detected";
                     }
 
-                    drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, { color: '#2E8B57', lineWidth: 2 });
-                    drawLandmarks(canvasCtx, results.poseLandmarks, { color: '#2E8B57', lineWidth: 1, radius: 3 });
+                    const bodyVisible = isWholeBodyVisible(results.poseLandmarks);
+                    const poseIsValid =
+                        bodyVisible
+                        && formValidationReceived
+                        && latestFormOk;
+                    const poseColor = poseIsValid
+                        ? VALID_POSE_COLOR
+                        : INVALID_POSE_COLOR;
+                    drawConnectors(
+                        canvasCtx,
+                        results.poseLandmarks,
+                        POSE_CONNECTIONS,
+                        { color: poseColor, lineWidth: 3 }
+                    );
+                    drawLandmarks(
+                        canvasCtx,
+                        results.poseLandmarks,
+                        {
+                            color: poseColor,
+                            fillColor: poseColor,
+                            lineWidth: 1,
+                            radius: 4
+                        }
+                    );
 
                     const keypoints = results.poseLandmarks.map(landmark => [
                         landmark.x,
@@ -1361,9 +1387,12 @@
                         landmark.visibility || 1.0
                     ]);
 
-                    const bodyVisible = isWholeBodyVisible(results.poseLandmarks);
                     if (bodyVisible !== wholeBodyDetected) {
                         wholeBodyDetected = bodyVisible;
+                        if (!bodyVisible) {
+                            latestFormOk = false;
+                            formValidationReceived = false;
+                        }
                         updateWholeBodyDetectionUI(wholeBodyDetected);
                     }
 
@@ -1606,6 +1635,8 @@
             }
             
             if (data.form_ok !== undefined) {
+                formValidationReceived = wholeBodyDetected;
+                latestFormOk = wholeBodyDetected && data.form_ok === true;
                 if (personDetected) {
                     const statusText = data.form_ok ? "OK" : "FIX";
                     
