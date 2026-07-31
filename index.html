@@ -644,19 +644,19 @@
                 background: #000;
             }
 
-            /* Fit full camera frame in viewport — no crop/zoom from overflow */
+            /* Preserve the original mobile camera framing: fill the viewport. */
             #camera-stream,
             #pose-canvas {
                 position: absolute;
-                top: 50%;
-                left: 50%;
+                top: 0;
+                left: 0;
                 width: 100%;
                 height: 100%;
-                max-width: 100%;
-                max-height: 100%;
-                object-fit: contain;
+                max-width: none;
+                max-height: none;
+                object-fit: cover;
                 border-radius: 0;
-                transform: translate(-50%, -50%) scaleX(-1);
+                transform: scaleX(-1);
             }
 
             #camera-stream {
@@ -2324,9 +2324,8 @@
             const videoConstraints = isMobile
                 ? {
                     facingMode: 'user',
-                    width: { ideal: 480 },
-                    height: { ideal: 854 },
-                    aspectRatio: { ideal: 9 / 16 }
+                    width: { ideal: 640, max: 1280 },
+                    height: { ideal: 480, max: 720 }
                 }
                 : {
                     facingMode: 'user',
