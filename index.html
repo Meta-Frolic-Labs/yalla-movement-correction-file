@@ -2041,6 +2041,19 @@
             }
         }
 
+        function isAppleMobileDevice() {
+            const userAgent = navigator.userAgent || '';
+            const platform = navigator.platform || '';
+            const iOSUserAgent = /iPad|iPhone|iPod/i.test(userAgent);
+            const iPadDesktopMode =
+                platform === 'MacIntel' && navigator.maxTouchPoints > 1;
+            const mobileWebKit =
+                /AppleWebKit/i.test(userAgent)
+                && /Mobile\//i.test(userAgent)
+                && !/Android/i.test(userAgent);
+            return iOSUserAgent || iPadDesktopMode || mobileWebKit;
+        }
+
         async function initializeLegacyPose(reason) {
             if (
                 posePipelineMode === 'legacy'
@@ -2367,6 +2380,15 @@
         // Initialize the supported MediaPipe Tasks Pose Landmarker in a worker.
         function initializeMediaPipe() {
             if (poseWorker || pose || poseFallbackStarted) return;
+
+            // WKWebView can expose Worker/createImageBitmap even when video
+            // ImageBitmaps do not produce reliable frames for Tasks Vision.
+            // Feed the HTMLVideoElement directly to MediaPipe on Apple mobile
+            // devices; Android keeps the faster worker pipeline.
+            if (isAppleMobileDevice()) {
+                initializeLegacyPose('Using the iOS-compatible video pipeline');
+                return;
+            }
 
             if (
                 typeof Worker !== 'function'
