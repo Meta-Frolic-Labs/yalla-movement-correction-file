@@ -1450,6 +1450,7 @@
         const MAX_WEBSOCKET_BUFFER_BYTES = 64 * 1024;
         let lastKeypointSentAt = 0;
         let lastTrackingMethod = null;
+        let shoulderRaiseGuideY = null;
 
         // Camera jerk detection variables
         let lastKeypoints = null;
@@ -1875,6 +1876,7 @@
             lastKeypoints = null;
             lastFrameTimestamp = null;
             lastKeypointSentAt = 0;
+            shoulderRaiseGuideY = null;
             isCameraJerk = false;
             jerkRecoveryFrames = 0;
             overlayActive = false;
@@ -1963,6 +1965,7 @@
             // Keep canvas buffer matched to the camera; CSS object-fit handles display size.
             poseCanvas.width = cameraStream.videoWidth;
             poseCanvas.height = cameraStream.videoHeight;
+            shoulderRaiseGuideY = null;
 
             const isMobile = window.innerWidth <= 768;
             if (isMobile) {
@@ -2532,7 +2535,7 @@
             const scale = displayedCanvasWidth > 0
                 ? canvasWidth / displayedCanvasWidth
                 : Math.max(0.8, canvasWidth / 640);
-            const targetY = Math.max(
+            const rawTargetY = Math.max(
                 34 * scale,
                 Math.min(
                     canvasHeight - 34 * scale,
@@ -2541,6 +2544,20 @@
                     * canvasHeight
                 )
             );
+            const guideSmoothing = multiModeMode === 'bilateral' ? 0.18 : 0.28;
+            const maximumGuideStep = (multiModeMode === 'bilateral' ? 6 : 9) * scale;
+            if (shoulderRaiseGuideY === null) {
+                shoulderRaiseGuideY = rawTargetY;
+            } else {
+                const smoothedDelta =
+                    (rawTargetY - shoulderRaiseGuideY) * guideSmoothing;
+                const boundedDelta = Math.max(
+                    -maximumGuideStep,
+                    Math.min(maximumGuideStep, smoothedDelta)
+                );
+                shoulderRaiseGuideY += boundedDelta;
+            }
+            const targetY = shoulderRaiseGuideY;
             const lineStartX = canvasWidth * 0.06;
             const lineEndX = canvasWidth * 0.94;
             const guideColor = '#FFD54A';
