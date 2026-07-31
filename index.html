@@ -1463,6 +1463,10 @@
         // Whole body detection variables
         const bodyVisibilityThreshold = 0.55;
         const keyPointVisibilityThreshold = 0.4;
+        // Keep the single-arm framing gate aligned with the exercise rules.
+        // A stricter UI-only threshold caused valid iOS legacy-pose frames to
+        // remain behind the positioning overlay while the backend accepted them.
+        const trackingLandmarkVisibilityThreshold = 0.45;
         const VALID_POSE_COLOR = '#00FF00';
         const INVALID_POSE_COLOR = '#FF2D2D';
         // null means no pose frame has confirmed visibility yet. Starting at
@@ -1668,6 +1672,30 @@
 
         console.log(' Exercise page loaded - initializing...', exerciseIcon);
 
+        // MediaPipe Tasks always includes visibility, while the legacy Pose
+        // result used by iOS/WKWebView can omit it. Keep the framing check and
+        // the keypoints sent to the backend on the same fallback semantics.
+        function getLandmarkVisibility(landmark) {
+            if (landmark?.visibility != null) {
+                const visibility = Number(landmark.visibility);
+                if (Number.isFinite(visibility)) return visibility;
+            }
+
+            if (landmark?.presence != null) {
+                const presence = Number(landmark.presence);
+                if (Number.isFinite(presence)) return presence;
+            }
+
+            return 1.0;
+        }
+
+        function isLandmarkVisible(landmarks, index, threshold) {
+            return (
+                index < landmarks.length
+                && getLandmarkVisibility(landmarks[index]) >= threshold
+            );
+        }
+
         // Check if whole body is visible
         function isWholeBodyVisible(landmarks) {
             if (!landmarks || landmarks.length === 0) return false;
@@ -1678,7 +1706,11 @@
                     ? [12, 14, 16, 24]
                     : [11, 13, 15, 23];
                 return sideIndices.every((index) =>
-                    index < landmarks.length && landmarks[index].visibility >= 0.55
+                    isLandmarkVisible(
+                        landmarks,
+                        index,
+                        trackingLandmarkVisibilityThreshold
+                    )
                 );
             }
             if (
@@ -1689,12 +1721,16 @@
                     ? [12, 14, 16, 24]
                     : [11, 13, 15, 23];
                 return sideIndices.every((index) =>
-                    index < landmarks.length && landmarks[index].visibility >= 0.55
+                    isLandmarkVisible(
+                        landmarks,
+                        index,
+                        trackingLandmarkVisibilityThreshold
+                    )
                 );
             }
             if (exerciseName === 'leg_raise_rules') {
                 const chainVisible = (indices) => indices.every((index) =>
-                    index < landmarks.length && landmarks[index].visibility >= 0.55
+                    isLandmarkVisible(landmarks, index, 0.55)
                 );
                 const leftChain = [11, 23, 25];
                 const rightChain = [12, 24, 26];
@@ -1704,8 +1740,11 @@
                 // Ankles flicker at depth; hips + knees + upper body are enough.
                 const squatIndices = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26];
                 return squatIndices.every((index) =>
-                    index < landmarks.length
-                    && landmarks[index].visibility >= keyPointVisibilityThreshold
+                    isLandmarkVisible(
+                        landmarks,
+                        index,
+                        keyPointVisibilityThreshold
+                    )
                 );
             }
             const keyPointIndices = isMultiModeExercise
@@ -1714,11 +1753,12 @@
             let visiblePoints = 0;
 
             for (const index of keyPointIndices) {
-                if (index < landmarks.length) {
-                    const landmark = landmarks[index];
-                    if (landmark.visibility >= keyPointVisibilityThreshold) {
-                        visiblePoints++;
-                    }
+                if (isLandmarkVisible(
+                    landmarks,
+                    index,
+                    keyPointVisibilityThreshold
+                )) {
+                    visiblePoints++;
                 }
             }
 
@@ -2635,13 +2675,13 @@
                         landmark.x,
                         landmark.y,
                         landmark.z || 0,
-                        landmark.visibility ?? 1.0
+                        getLandmarkVisibility(landmark)
                     ]);
                     const worldKeypoints = (results.poseWorldLandmarks || []).map(landmark => [
                         landmark.x,
                         landmark.y,
                         landmark.z || 0,
-                        landmark.visibility ?? 1.0
+                        getLandmarkVisibility(landmark)
                     ]);
 
                     const bodyVisible = isWholeBodyVisible(results.poseLandmarks);
@@ -2683,7 +2723,7 @@
                     }
                     // Reconcile the prompt every frame so an interrupted CSS
                     // transition or another UI reset cannot leave it hidden.
-                    updateWholeBodyDetectionUI(bodyVisible);
+                    updateWholeBodyDetectionUI(bodyVisible, true);
 
                     // Always keep sending keypoints while a person is detected.
                     // Stopping the stream on partial occlusion (common at squat
@@ -2725,7 +2765,7 @@
                     wholeBodyDetected = false;
                     latestFormOk = false;
                     formValidationReceived = false;
-                    updateWholeBodyDetectionUI(false);
+                    updateWholeBodyDetectionUI(false, false);
 
                     if (missingFrames >= MISSING_THRESHOLD && personDetected) {
                         personDetected = false;
@@ -2750,7 +2790,7 @@
         }
 
         // Update whole body detection UI
-        function updateWholeBodyDetectionUI(isVisible) {
+        function updateWholeBodyDetectionUI(isVisible, hasPose = false) {
             if (isVisible) {
                 personDetectionOverlay.classList.remove('active');
                 cameraStream.classList.remove('blur');
@@ -2758,6 +2798,11 @@
                 overlayActive = false;
             } else {
                 personDetectionOverlay.classList.add('active');
+                if (noPersonText) {
+                    noPersonText.textContent = hasPose
+                        ? 'Person detected — adjust your position'
+                        : 'No person detected';
+                }
                 // Avoid a live-video blur filter competing with pose inference
                 // for GPU/compositor time. The red skeleton provides framing.
                 cameraStream.classList.remove('blur');
