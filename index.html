@@ -252,7 +252,7 @@
             display: block;
             position: relative;
             z-index: 1;
-            opacity: 0;
+            opacity: 1;
             pointer-events: none;
         }
 
@@ -661,7 +661,7 @@
 
             #camera-stream {
                 z-index: 1;
-                opacity: 0;
+                opacity: 1;
                 pointer-events: none;
             }
 
@@ -1179,8 +1179,9 @@
         </div>
     </div>
 
-    <!-- Drawing stays on the UI thread; Pose Landmarker inference runs in pose-worker.js. -->
+    <!-- Keep drawing and the mobile-compatible fallback available on the UI thread. -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
 
     <script>
         // Configuration — frontend and backend run on separate ports
@@ -1196,16 +1197,19 @@
             [27, 29], [28, 30], [29, 31], [30, 32], [27, 31], [28, 32]
         ];
 
+        const frontendAssetUrl = (path) =>
+            new URL(path, document.baseURI).href;
+
         const exerciseIcons = {
-            'barbell_biceps_curl_rules': '/images/exercises/barbel-curls.png',
-            'hammer_curl_rules': '/images/exercises/hammercurl.png',
-            'shoulder_front_raise_rules': '/images/exercises/shoulderfrontraises.png',
-            'shoulder_lateral_raise_rules': '/images/exercises/literal_raises.png',
-            'squat_rules': '/images/exercises/squat.png',
-            'pushup_rules': '/images/exercises/pushups.png',
-            'plank_rules': '/images/exercises/plank.png',
-            'deadlift_rules': '/images/exercises/deadlift.png',
-            'leg_raise_rules': '/images/exercises/leg-raises.png'
+            'barbell_biceps_curl_rules': frontendAssetUrl('./images/exercises/barbel-curls.png'),
+            'hammer_curl_rules': frontendAssetUrl('./images/exercises/hammercurl.png'),
+            'shoulder_front_raise_rules': frontendAssetUrl('./images/exercises/shoulderfrontraises.png'),
+            'shoulder_lateral_raise_rules': frontendAssetUrl('./images/exercises/literal_raises.png'),
+            'squat_rules': frontendAssetUrl('./images/exercises/squat.png'),
+            'pushup_rules': frontendAssetUrl('./images/exercises/pushups.png'),
+            'plank_rules': frontendAssetUrl('./images/exercises/plank.png'),
+            'deadlift_rules': frontendAssetUrl('./images/exercises/deadlift.png'),
+            'leg_raise_rules': frontendAssetUrl('./images/exercises/leg-raises.png')
         };
 
         const exerciseDisplayNames = {
@@ -1413,7 +1417,12 @@
         let pose = null;
         let poseWorker = null;
         let poseWorkerReady = false;
+        let poseWorkerInitializationTimer = null;
         let poseFrameInFlight = false;
+        let posePipelineMode = 'none';
+        let poseFallbackStarted = false;
+        let poseBitmapFailureCount = 0;
+        let poseWorkerFailureCount = 0;
         let poseAnimationFrame = null;
         let poseVideoFrameCallback = null;
         let lastSubmittedVideoTime = -1;
@@ -1426,6 +1435,7 @@
         let poseSkippedFrameCount = 0;
         let posePerformanceWindowStartedAt = 0;
         const POSE_PERFORMANCE_LOG_INTERVAL = 60;
+        const MAX_POSE_PIPELINE_FAILURES = 2;
         let camera = null;
         let sessionId = null;
         let exerciseName = null;
@@ -1992,12 +2002,107 @@
             cancelPoseFrameLoop();
             poseFrameInFlight = false;
             poseWorkerReady = false;
+            posePipelineMode = 'none';
+            poseFallbackStarted = false;
+            poseBitmapFailureCount = 0;
+            poseWorkerFailureCount = 0;
             lastSubmittedVideoTime = -1;
+            if (poseWorkerInitializationTimer !== null) {
+                clearTimeout(poseWorkerInitializationTimer);
+                poseWorkerInitializationTimer = null;
+            }
+            if (poseWorker) {
+                poseWorker.terminate();
+                poseWorker = null;
+            }
+            if (pose && typeof pose.close === 'function') {
+                try {
+                    pose.close();
+                } catch (error) {
+                    console.warn('Unable to close pose pipeline cleanly:', error);
+                }
+            }
+            pose = null;
+        }
+
+        function showPosePipelineError(error) {
+            console.error('Pose tracking unavailable:', error);
+            loader.style.display = 'none';
+            cameraPermission.style.display = 'block';
+            const title = cameraPermission.querySelector('h3');
+            const message = cameraPermission.querySelector('p');
+            if (title) title.textContent = 'Pose Tracking Unavailable';
+            if (message) {
+                message.textContent =
+                    'Please update the app or browser and restart the exercise.';
+            }
+        }
+
+        async function initializeLegacyPose(reason) {
+            if (
+                posePipelineMode === 'legacy'
+                || poseFallbackStarted
+                || !exerciseActive
+            ) {
+                return;
+            }
+
+            poseFallbackStarted = true;
+            console.warn('Switching to mobile-compatible MediaPipe Pose:', reason);
+            cancelPoseFrameLoop();
+            poseFrameInFlight = false;
+            poseWorkerReady = false;
+            if (poseWorkerInitializationTimer !== null) {
+                clearTimeout(poseWorkerInitializationTimer);
+                poseWorkerInitializationTimer = null;
+            }
             if (poseWorker) {
                 poseWorker.terminate();
                 poseWorker = null;
             }
             pose = null;
+            posePipelineMode = 'none';
+
+            try {
+                if (typeof window.Pose !== 'function') {
+                    throw new Error('Legacy MediaPipe Pose failed to load.');
+                }
+
+                const legacyPose = new window.Pose({
+                    locateFile: (file) =>
+                        `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+                });
+                legacyPose.setOptions({
+                    modelComplexity: 0,
+                    smoothLandmarks: true,
+                    enableSegmentation: false,
+                    smoothSegmentation: false,
+                    minDetectionConfidence: 0.68,
+                    minTrackingConfidence: 0.68
+                });
+                legacyPose.onResults((results) => {
+                    poseFrameInFlight = false;
+                    onPoseResults(results);
+                });
+
+                pose = legacyPose;
+                posePipelineMode = 'legacy';
+                poseDelegate = 'legacy-main-thread';
+                poseGpuFallbackReason = reason || null;
+                console.info('MediaPipe Pose ready: mobile-compatible fallback');
+
+                if (!camera) {
+                    await startCameraStream();
+                } else {
+                    startPoseFrameLoop();
+                }
+            } catch (error) {
+                posePipelineMode = 'none';
+                pose = null;
+                showPosePipelineError(error);
+            } finally {
+                poseFallbackStarted = false;
+            }
         }
 
         function getPoseBitmapOptions() {
@@ -2022,9 +2127,19 @@
         }
 
         async function submitPoseFrame(timestampMs, mediaTime) {
+            const pipelineReady =
+                (
+                    posePipelineMode === 'worker'
+                    && poseWorkerReady
+                    && poseWorker
+                )
+                || (
+                    posePipelineMode === 'legacy'
+                    && pose
+                );
             if (
                 !exerciseActive
-                || !poseWorkerReady
+                || !pipelineReady
                 || poseFrameInFlight
                 || cameraStream.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
             ) {
@@ -2044,6 +2159,20 @@
             if (Number.isFinite(mediaTime)) {
                 lastSubmittedVideoTime = mediaTime;
             }
+
+            if (posePipelineMode === 'legacy') {
+                try {
+                    await pose.send({ image: cameraStream });
+                    return true;
+                } catch (error) {
+                    console.error('Legacy pose inference failed:', error);
+                    showPosePipelineError(error);
+                    return false;
+                } finally {
+                    poseFrameInFlight = false;
+                }
+            }
+
             try {
                 const captureStartedAt = performance.now();
                 const bitmapOptions = getPoseBitmapOptions();
@@ -2061,16 +2190,32 @@
                     },
                     [frame]
                 );
+                poseBitmapFailureCount = 0;
                 return true;
             } catch (error) {
                 poseFrameInFlight = false;
+                poseBitmapFailureCount += 1;
                 console.error('Unable to prepare pose frame:', error);
+                if (poseBitmapFailureCount >= MAX_POSE_PIPELINE_FAILURES) {
+                    initializeLegacyPose(
+                        error?.message || 'createImageBitmap is unavailable'
+                    );
+                }
                 return false;
             }
         }
 
         function scheduleNextPoseFrame() {
-            if (!exerciseActive || !camera || !poseWorkerReady) {
+            const pipelineReady =
+                (
+                    posePipelineMode === 'worker'
+                    && poseWorkerReady
+                )
+                || (
+                    posePipelineMode === 'legacy'
+                    && pose
+                );
+            if (!exerciseActive || !camera || !pipelineReady) {
                 return;
             }
             if (typeof cameraStream.requestVideoFrameCallback === 'function') {
@@ -2102,7 +2247,14 @@
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
                 cancelPoseFrameLoop();
-            } else if (exerciseActive && camera && poseWorkerReady) {
+            } else if (
+                exerciseActive
+                && camera
+                && (
+                    (posePipelineMode === 'worker' && poseWorkerReady)
+                    || (posePipelineMode === 'legacy' && pose)
+                )
+            ) {
                 startPoseFrameLoop();
             }
         });
@@ -2212,15 +2364,37 @@
 
         // Initialize the supported MediaPipe Tasks Pose Landmarker in a worker.
         function initializeMediaPipe() {
-            if (poseWorker) return;
+            if (poseWorker || pose || poseFallbackStarted) return;
+
+            if (
+                typeof Worker !== 'function'
+                || typeof createImageBitmap !== 'function'
+            ) {
+                initializeLegacyPose(
+                    'Web Worker or createImageBitmap is unavailable'
+                );
+                return;
+            }
+
             // Tasks Vision's WASM bootstrap relies on importScripts(), so the
             // worker must remain classic even though its bundle is imported dynamically.
-            poseWorker = new Worker('/pose-worker.js');
+            const workerUrl = new URL('./pose-worker.js', document.baseURI);
+            try {
+                poseWorker = new Worker(workerUrl);
+            } catch (error) {
+                initializeLegacyPose(error?.message || 'Pose worker could not start');
+                return;
+            }
+            posePipelineMode = 'worker';
             pose = poseWorker;
 
             poseWorker.onmessage = (event) => {
                 const message = event.data || {};
                 if (message.type === 'ready') {
+                    if (poseWorkerInitializationTimer !== null) {
+                        clearTimeout(poseWorkerInitializationTimer);
+                        poseWorkerInitializationTimer = null;
+                    }
                     poseDelegate = message.delegate || 'unknown';
                     poseGpuFallbackReason = message.gpuFallbackReason || null;
                     resetPosePerformanceWindow();
@@ -2232,6 +2406,7 @@
                         );
                     }
                     poseWorkerReady = true;
+                    poseWorkerFailureCount = 0;
                     startCameraStream().catch((error) => {
                         console.error('Camera error:', error);
                         loader.style.display = 'none';
@@ -2255,31 +2430,45 @@
                     poseInferenceTotalMs += inferenceMs;
                     poseResultAgeTotalMs += resultAgeMs;
                     emitPosePerformanceTelemetry();
-                    try {
-                        onPoseResults({
-                            image: message.frame,
-                            poseLandmarks: message.landmarks,
-                            poseWorldLandmarks: message.worldLandmarks
-                        });
-                    } finally {
-                        message.frame?.close?.();
-                    }
+                    onPoseResults({
+                        poseLandmarks: message.landmarks,
+                        poseWorldLandmarks: message.worldLandmarks
+                    });
                     return;
                 }
                 if (message.type === 'error') {
                     poseFrameInFlight = false;
-                    console.error(`Pose ${message.stage} error:`, message.message);
                     if (message.stage === 'initialization') {
-                        loader.style.display = 'none';
-                        cameraPermission.style.display = 'block';
+                        clearTimeout(poseWorkerInitializationTimer);
+                        poseWorkerInitializationTimer = null;
+                    }
+                    console.error(`Pose ${message.stage} error:`, message.message);
+                    poseWorkerFailureCount += 1;
+                    if (
+                        message.stage === 'initialization'
+                        || poseWorkerFailureCount >= MAX_POSE_PIPELINE_FAILURES
+                    ) {
+                        initializeLegacyPose(
+                            message.message || `Worker ${message.stage} failed`
+                        );
                     }
                 }
             };
             poseWorker.onerror = (error) => {
                 poseFrameInFlight = false;
+                clearTimeout(poseWorkerInitializationTimer);
+                poseWorkerInitializationTimer = null;
                 console.error('Pose worker error:', error.message || error);
+                initializeLegacyPose(
+                    error?.message || 'Pose worker failed to load'
+                );
             };
             poseWorker.postMessage({ type: 'init', modelUrl: POSE_MODEL_URL });
+            poseWorkerInitializationTimer = setTimeout(() => {
+                if (!poseWorkerReady && posePipelineMode === 'worker') {
+                    initializeLegacyPose('Pose worker initialization timed out');
+                }
+            }, 8000);
         }
 
         function isShoulderRaiseExercise() {
@@ -2391,17 +2580,6 @@
 
                 canvasCtx.save();
                 canvasCtx.clearRect(0, 0, poseCanvas.width, poseCanvas.height);
-                if (results.image) {
-                    // Draw the exact frame used for inference so the camera
-                    // image and its landmarks remain visually synchronized.
-                    canvasCtx.drawImage(
-                        results.image,
-                        0,
-                        0,
-                        poseCanvas.width,
-                        poseCanvas.height
-                    );
-                }
 
                 if (results.poseLandmarks) {
                     missingFrames = 0;

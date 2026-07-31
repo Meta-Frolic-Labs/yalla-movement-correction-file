@@ -82,25 +82,19 @@ self.onmessage = async (event) => {
         return;
     }
 
-    let frameReturned = false;
     try {
         const inferenceStartedAt = performance.now();
         const result = poseLandmarker.detectForVideo(frame, message.timestampMs);
         const inferenceMs = performance.now() - inferenceStartedAt;
-        self.postMessage(
-            {
-                type: "result",
-                timestampMs: message.timestampMs,
-                mediaTime: message.mediaTime,
-                captureMs: message.captureMs,
-                inferenceMs,
-                frame,
-                landmarks: compactLandmarks(result.landmarks?.[0]),
-                worldLandmarks: compactLandmarks(result.worldLandmarks?.[0]),
-            },
-            [frame],
-        );
-        frameReturned = true;
+        self.postMessage({
+            type: "result",
+            timestampMs: message.timestampMs,
+            mediaTime: message.mediaTime,
+            captureMs: message.captureMs,
+            inferenceMs,
+            landmarks: compactLandmarks(result.landmarks?.[0]),
+            worldLandmarks: compactLandmarks(result.worldLandmarks?.[0]),
+        });
     } catch (error) {
         self.postMessage({
             type: "error",
@@ -108,8 +102,6 @@ self.onmessage = async (event) => {
             message: error?.message || String(error),
         });
     } finally {
-        if (!frameReturned) {
-            frame?.close?.();
-        }
+        frame?.close?.();
     }
 };
