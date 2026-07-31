@@ -1153,6 +1153,31 @@
                     </ul>
                 </div>
 
+                <div id="rdl-details" class="hammer-details" hidden>
+                    <h3>ROMANIAN DEADLIFT DETAILS</h3>
+                    <div class="hammer-metrics">
+                        <div class="hammer-metric"><span>Tracking side</span><span id="rdl-tracking-side">—</span></div>
+                        <div class="hammer-metric"><span>Side visibility</span><span id="rdl-side-visibility">—</span>
+                        </div>
+                        <div class="hammer-metric"><span>Camera view</span><span id="rdl-camera-view">unknown</span>
+                        </div>
+                        <div class="hammer-metric"><span>Hip angle</span><span id="rdl-hip-angle">—</span></div>
+                        <div class="hammer-metric"><span>Knee angle</span><span id="rdl-knee-angle">—</span></div>
+                        <div class="hammer-metric"><span>Torso angle</span><span id="rdl-torso-angle">—</span></div>
+                        <div class="hammer-metric"><span>Side-view ratio</span><span id="rdl-side-ratio">—</span></div>
+                        <div class="hammer-metric"><span>Side alignment</span><span id="rdl-side-alignment">—</span>
+                        </div>
+                        <div class="hammer-metric"><span>Current state</span><span id="rdl-state">not_ready</span></div>
+                        <div class="hammer-metric"><span>Last invalid rep</span><span id="rdl-invalid">None</span></div>
+                    </div>
+                    <ul class="hammer-setup">
+                        <li>Stand side-on to the camera with your full body visible.</li>
+                        <li>Keep a soft bend in your knees and your back controlled.</li>
+                        <li>Push your hips back until your torso hinges forward.</li>
+                        <li>Drive your hips forward and finish fully upright.</li>
+                    </ul>
+                </div>
+
                 <div id="hammer-details" class="hammer-details" hidden>
                     <h3>HAMMER CURL DETAILS</h3>
                     <div class="hammer-metrics">
@@ -1208,7 +1233,8 @@
             'squat_rules': frontendAssetUrl('./images/exercises/squat.png'),
             'pushup_rules': frontendAssetUrl('./images/exercises/pushups.png'),
             'plank_rules': frontendAssetUrl('./images/exercises/plank.png'),
-            'deadlift_rules': frontendAssetUrl('./images/exercises/deadlift.png'),
+            'deadlift_rules': frontendAssetUrl('./images/exercises/deadlift.png?v=2'),
+            'romanian_deadlift_rules': frontendAssetUrl('./images/exercises/deadlift.png?v=2'),
             'leg_raise_rules': frontendAssetUrl('./images/exercises/leg-raises.png')
         };
 
@@ -1221,6 +1247,7 @@
             'pushup_rules': 'Push-Up',
             'plank_rules': 'Plank',
             'deadlift_rules': 'Deadlift',
+            'romanian_deadlift_rules': 'Romanian Deadlift',
             'leg_raise_rules': 'Lying Leg Raises'
         };
 
@@ -1233,6 +1260,7 @@
             'pushup_rules': 'push-up',
             'plank_rules': 'plank',
             'deadlift_rules': 'deadlift',
+            'romanian_deadlift_rules': 'romanian_deadlift',
             'leg_raise_rules': 'leg_raise'
         };
 
@@ -1296,6 +1324,9 @@
                 exerciseName !== 'hammer_curl_rules';
             document.getElementById('front-raise-details').hidden =
                 !['shoulder_front_raise_rules', 'shoulder_lateral_raise_rules'].includes(exerciseName);
+            document.getElementById('rdl-details').hidden =
+                exerciseName !== 'romanian_deadlift_rules';
+
             const lateralRaise = exerciseName === 'shoulder_lateral_raise_rules';
             const shoulderRaiseTitle = document.getElementById('shoulder-raise-details-title');
             const shoulderRaiseInstructions = document.getElementById('shoulder-raise-instructions');
@@ -1321,7 +1352,10 @@
             }
 
             const positionInstructions = document.getElementById('position-instructions');
-            if (exerciseName === 'leg_raise_rules') {
+            if (exerciseName === 'romanian_deadlift_rules') {
+                positionInstructions.textContent =
+                    'Use a clear side view and keep one full shoulder-to-ankle side visible.';
+            } else if (exerciseName === 'leg_raise_rules') {
                 positionInstructions.textContent =
                     'Lie on your back, turn sideways to the camera, and keep both legs visible.';
             } else if (multiModeExerciseKeys.has(exerciseName)) {
@@ -1728,6 +1762,14 @@
                     )
                 );
             }
+            if (exerciseName === 'romanian_deadlift_rules') {
+                const leftSide = [11, 23, 25, 27];
+                const rightSide = [12, 24, 26, 28];
+                const sideVisible = (indices) => indices.every((index) =>
+                    isLandmarkVisible(landmarks, index, 0.60)
+                );
+                return sideVisible(leftSide) || sideVisible(rightSide);
+            }
             if (exerciseName === 'leg_raise_rules') {
                 const chainVisible = (indices) => indices.every((index) =>
                     isLandmarkVisible(landmarks, index, 0.55)
@@ -1963,7 +2005,17 @@
                 'front-raise-right-reps': '0',
                 'front-raise-pairs': '0',
                 'front-raise-state': 'not_ready',
-                'front-raise-invalid': 'No failed rep'
+                'front-raise-invalid': 'No failed rep',
+                'rdl-tracking-side': '—',
+                'rdl-side-visibility': '—',
+                'rdl-camera-view': 'unknown',
+                'rdl-hip-angle': '—',
+                'rdl-knee-angle': '—',
+                'rdl-torso-angle': '—',
+                'rdl-side-ratio': '—',
+                'rdl-side-alignment': '—',
+                'rdl-state': 'not_ready',
+                'rdl-invalid': 'None'
             })) {
                 const element = document.getElementById(id);
                 if (element) element.textContent = value;
@@ -1997,9 +2049,11 @@
             }
         }
 
+        let cameraDimensionSyncBound = false;
+
         function applyCameraAspectRatio() {
             if (!cameraStream.videoWidth || !cameraStream.videoHeight) {
-                return;
+                return false;
             }
 
             // Keep canvas buffer matched to the camera; CSS object-fit handles display size.
@@ -2025,6 +2079,82 @@
                 cameraStream.style.height = 'auto';
                 cameraStream.style.aspectRatio = aspectRatio;
             }
+            return true;
+        }
+
+        function ensurePoseCanvasMatchesVideo() {
+            if (
+                poseCanvas.width === cameraStream.videoWidth
+                && poseCanvas.height === cameraStream.videoHeight
+            ) {
+                return true;
+            }
+            return applyCameraAspectRatio();
+        }
+
+        function onCameraDimensionsReady() {
+            if (applyCameraAspectRatio()) {
+                console.info('Camera dimensions synced', {
+                    width: cameraStream.videoWidth,
+                    height: cameraStream.videoHeight
+                });
+            }
+        }
+
+        function bindCameraDimensionSync() {
+            if (cameraDimensionSyncBound) {
+                return;
+            }
+            cameraDimensionSyncBound = true;
+            cameraStream.addEventListener('loadedmetadata', onCameraDimensionsReady);
+            cameraStream.addEventListener('resize', onCameraDimensionsReady);
+            window.addEventListener('orientationchange', onCameraDimensionsReady);
+            window.addEventListener('resize', onCameraDimensionsReady);
+        }
+
+        function unbindCameraDimensionSync() {
+            if (!cameraDimensionSyncBound) {
+                return;
+            }
+            cameraDimensionSyncBound = false;
+            cameraStream.removeEventListener('loadedmetadata', onCameraDimensionsReady);
+            cameraStream.removeEventListener('resize', onCameraDimensionsReady);
+            window.removeEventListener('orientationchange', onCameraDimensionsReady);
+            window.removeEventListener('resize', onCameraDimensionsReady);
+        }
+
+        function waitForCameraDimensions(timeoutMs = 5000) {
+            if (cameraStream.videoWidth && cameraStream.videoHeight) {
+                applyCameraAspectRatio();
+                return Promise.resolve(true);
+            }
+
+            return new Promise((resolve) => {
+                let settled = false;
+                const finish = (ready) => {
+                    if (settled) {
+                        return;
+                    }
+                    settled = true;
+                    cameraStream.removeEventListener('loadedmetadata', onReady);
+                    cameraStream.removeEventListener('resize', onReady);
+                    clearTimeout(timer);
+                    resolve(ready);
+                };
+                const onReady = () => {
+                    if (cameraStream.videoWidth && cameraStream.videoHeight) {
+                        applyCameraAspectRatio();
+                        finish(true);
+                    }
+                };
+                cameraStream.addEventListener('loadedmetadata', onReady);
+                cameraStream.addEventListener('resize', onReady);
+                const timer = setTimeout(() => {
+                    finish(Boolean(
+                        cameraStream.videoWidth && cameraStream.videoHeight
+                    ));
+                }, timeoutMs);
+            });
         }
 
         function cancelPoseFrameLoop() {
@@ -2129,12 +2259,15 @@
                         `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
                 });
                 legacyPose.setOptions({
-                    modelComplexity: 0,
+                    // Use MediaPipe's balanced defaults on iOS. The lite model
+                    // plus 0.68 confidence could continuously reject a valid
+                    // person in lower-light front-camera frames.
+                    modelComplexity: 1,
                     smoothLandmarks: true,
                     enableSegmentation: false,
                     smoothSegmentation: false,
-                    minDetectionConfidence: 0.68,
-                    minTrackingConfidence: 0.68
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
                 });
                 legacyPose.onResults((results) => {
                     poseFrameInFlight = false;
@@ -2198,6 +2331,7 @@
                 || !pipelineReady
                 || poseFrameInFlight
                 || cameraStream.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
+                || !ensurePoseCanvasMatchesVideo()
             ) {
                 if (poseFrameInFlight) {
                     poseSkippedFrameCount += 1;
@@ -2274,7 +2408,14 @@
             if (!exerciseActive || !camera || !pipelineReady) {
                 return;
             }
-            if (typeof cameraStream.requestVideoFrameCallback === 'function') {
+            // requestVideoFrameCallback is exposed by some WKWebView versions
+            // where camera-backed callbacks are unreliable. MediaPipe's
+            // supported JS example uses an animation-driven camera loop, so
+            // keep that compatible path for Apple mobile devices.
+            if (
+                !isAppleMobileDevice()
+                && typeof cameraStream.requestVideoFrameCallback === 'function'
+            ) {
                 poseVideoFrameCallback =
                     cameraStream.requestVideoFrameCallback(runPoseVideoFrameLoop);
             } else {
@@ -2290,7 +2431,10 @@
 
         function runPoseAnimationFrameLoop(timestampMs) {
             poseAnimationFrame = null;
-            submitPoseFrame(timestampMs, Number(cameraStream.currentTime));
+            // A live getUserMedia video can report a fixed currentTime in
+            // WKWebView. Do not de-duplicate RAF frames by media time; the
+            // in-flight guard already prevents overlapping inference.
+            submitPoseFrame(timestampMs);
             scheduleNextPoseFrame();
         }
 
@@ -2393,21 +2537,35 @@
                 audio: false,
                 video: videoConstraints
             });
+            bindCameraDimensionSync();
             cameraStream.srcObject = mediaStream;
             cameraStream.playsInline = true;
+            cameraStream.setAttribute('playsinline', '');
+            cameraStream.setAttribute('webkit-playsinline', '');
             cameraStream.muted = true;
             await cameraStream.play();
-            applyCameraAspectRatio();
+            const dimensionsReady = await waitForCameraDimensions();
+            if (!dimensionsReady) {
+                console.warn(
+                    'Camera dimensions unavailable after timeout; pose overlay may misalign'
+                );
+            }
 
             camera = {
                 stop() {
                     cancelPoseFrameLoop();
+                    unbindCameraDimensionSync();
                     mediaStream.getTracks().forEach((track) => track.stop());
                     cameraStream.srcObject = null;
                 }
             };
             startPoseFrameLoop();
-            console.log('Camera started successfully');
+            console.log('Camera started successfully', {
+                videoWidth: cameraStream.videoWidth,
+                videoHeight: cameraStream.videoHeight,
+                canvasWidth: poseCanvas.width,
+                canvasHeight: poseCanvas.height
+            });
 
             setTimeout(() => {
                 if (!firstPoseResultReceived) {
@@ -2653,6 +2811,10 @@
 
             let canvasCtx = null;
             try {
+                if (!ensurePoseCanvasMatchesVideo()) {
+                    return;
+                }
+
                 canvasCtx = poseCanvas.getContext('2d');
                 const currentTimestamp = Date.now();
 
@@ -2970,6 +3132,39 @@
                     )
                 };
                 for (const [id, value] of Object.entries(frontRaiseValues)) {
+                    const element = document.getElementById(id);
+                    if (element) element.textContent = value;
+                }
+            }
+
+            if (data.exercise === 'romanian_deadlift' || exerciseName === 'romanian_deadlift_rules') {
+                const details = document.getElementById('rdl-details');
+                if (details) details.hidden = false;
+                const rdlValues = {
+                    'rdl-tracking-side': data.tracking_side || '—',
+                    'rdl-side-visibility': data.tracking_side_visibility == null
+                        ? '—'
+                        : Number(data.tracking_side_visibility).toFixed(2),
+                    'rdl-camera-view': data.camera_view || 'unknown',
+                    'rdl-hip-angle': data.hip_angle == null
+                        ? '—'
+                        : `${Math.round(data.hip_angle)}°`,
+                    'rdl-knee-angle': data.knee_angle == null
+                        ? '—'
+                        : `${Math.round(data.knee_angle)}°`,
+                    'rdl-torso-angle': data.torso_angle == null
+                        ? '—'
+                        : `${Math.round(data.torso_angle)}°`,
+                    'rdl-side-ratio': data.side_view_ratio == null
+                        ? '—'
+                        : Number(data.side_view_ratio).toFixed(2),
+                    'rdl-side-alignment': data.side_view_alignment == null
+                        ? '—'
+                        : Number(data.side_view_alignment).toFixed(2),
+                    'rdl-state': data.current_state || 'not_ready',
+                    'rdl-invalid': data.last_invalid_rep_reason || 'None'
+                };
+                for (const [id, value] of Object.entries(rdlValues)) {
                     const element = document.getElementById(id);
                     if (element) element.textContent = value;
                 }
