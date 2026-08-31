@@ -1497,6 +1497,7 @@
         // Whole body detection variables
         const bodyVisibilityThreshold = 0.55;
         const keyPointVisibilityThreshold = 0.4;
+        const deadliftLandmarkVisibilityThreshold = 0.5;
         // Keep the single-arm framing gate aligned with the exercise rules.
         // A stricter UI-only threshold caused valid iOS legacy-pose frames to
         // remain behind the positioning overlay while the backend accepted them.
@@ -1509,6 +1510,7 @@
         let latestFormOk = false;
         let formValidationReceived = false;
         let occlusionSent = false;
+        let deadliftTrackingStarted = false;
 
         // Camera ready flags
         let cameraReady = false;
@@ -1790,14 +1792,16 @@
                 );
             }
             if (exerciseName === 'deadlift_rules' || exerciseName === 'deadlift') {
-                // Same as squat: ankles often clipped by cover framing / depth flicker,
-                // which left the positioning overlay stuck at the bottom of the screen.
-                const deadliftIndices = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26];
+                // Initial arming requires the complete chain consumed by the
+                // detector. Once armed, ankle flicker must not mask an active cycle.
+                const deadliftIndices = deadliftTrackingStarted
+                    ? [11, 12, 15, 16, 23, 24, 25, 26]
+                    : [11, 12, 15, 16, 23, 24, 25, 26, 27, 28];
                 return deadliftIndices.every((index) =>
                     isLandmarkVisible(
                         landmarks,
                         index,
-                        keyPointVisibilityThreshold
+                        deadliftLandmarkVisibilityThreshold
                     )
                 );
             }
@@ -1975,6 +1979,7 @@
             jerkRecoveryFrames = 0;
             overlayActive = false;
             occlusionSent = false;
+            deadliftTrackingStarted = false;
 
             lastFeedbackText = "";
             lastFormStatus = "";
@@ -2991,6 +2996,7 @@
 
         // Handle no person detected
         function handleNoPersonDetected() {
+            deadliftTrackingStarted = false;
             formStatus.textContent = "NO PERSON";
             formStatus.className = "status bad";
             feedbackText.textContent = "No person detected";
@@ -3100,6 +3106,15 @@
 
         // Update UI with exercise data
         function updateUI(data) {
+            if (
+                (data.exercise === 'deadlift'
+                    || exerciseName === 'deadlift_rules'
+                    || exerciseName === 'deadlift')
+                && typeof data.tracking_started === 'boolean'
+            ) {
+                deadliftTrackingStarted = data.tracking_started;
+            }
+
             if (data.exercise) {
                 const mobileExerciseName = document.getElementById('exercise-name-mobile');
                 if (mobileExerciseName) {
