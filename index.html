@@ -1789,6 +1789,18 @@
                     )
                 );
             }
+            if (exerciseName === 'deadlift_rules' || exerciseName === 'deadlift') {
+                // Same as squat: ankles often clipped by cover framing / depth flicker,
+                // which left the positioning overlay stuck at the bottom of the screen.
+                const deadliftIndices = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26];
+                return deadliftIndices.every((index) =>
+                    isLandmarkVisible(
+                        landmarks,
+                        index,
+                        keyPointVisibilityThreshold
+                    )
+                );
+            }
             const keyPointIndices = isMultiModeExercise
                 ? [11, 12, 13, 14, 15, 16, 23, 24]
                 : [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
