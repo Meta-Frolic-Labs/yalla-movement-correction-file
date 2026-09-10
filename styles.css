@@ -1,0 +1,977 @@
+:root {
+    --primary: #4361ee;
+    --secondary: #3a0ca3;
+    --success: #4cc9f0;
+    --warning: #118076;
+    --dark: #212529;
+    --light: #f8f9fa;
+    --gray: #6c757d;
+    --transition: all 0.3s ease;
+    --shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+    --radius: 12px;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+html {
+    scrollbar-gutter: stable;
+}
+
+body {
+    background: linear-gradient(135deg, #1a2a6c, #118076, #fdbb2d);
+    background-size: 400% 400%;
+    animation: gradientBG 15s ease infinite;
+    color: var(--light);
+    min-height: 100vh;
+    overflow-x: hidden;
+}
+
+@keyframes gradientBG {
+    0% {
+        background-position: 0% 50%;
+    }
+
+    50% {
+        background-position: 100% 50%;
+    }
+
+    100% {
+        background-position: 0% 50%;
+    }
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+header {
+    text-align: center;
+    padding: 30px 0;
+    animation: fadeIn 1s ease;
+}
+
+button {
+    width: 100%;
+    padding: 15px;
+    border-radius: 8px;
+    border: none;
+    font-size: 1.1rem;
+    margin-bottom: 20px;
+    transition: var(--transition);
+}
+
+button {
+    background: var(--primary);
+    color: white;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+button:hover:not(:disabled) {
+    background: var(--secondary);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
+}
+
+button:disabled {
+    background: var(--gray);
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+
+#stop-btn {
+    background: var(--warning);
+    max-width: 200px;
+    margin: 20px auto;
+    display: none;
+}
+
+#stop-btn:hover {
+    background: #d81159;
+}
+
+/* Exercise View Styles */
+#exercise-view {
+    display: none;
+}
+
+.camera-diagnostics {
+    width: min(100%, 760px);
+    margin: 0 auto 20px;
+    padding: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: var(--radius);
+    background: rgba(0, 0, 0, 0.45);
+}
+
+.camera-diagnostics h2 {
+    margin-bottom: 10px;
+    font-size: 1.2rem;
+}
+
+.camera-diagnostics pre {
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+    font: 0.9rem/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+body.camera-diagnostic {
+    animation: none;
+    background: #111827;
+}
+
+body.camera-diagnostic #exercise-picker,
+body.camera-diagnostic .exercise-header,
+body.camera-diagnostic .stats-panel,
+body.camera-diagnostic .mobile-info-panel,
+body.camera-diagnostic .feedback-panel,
+body.camera-diagnostic .hammer-details,
+body.camera-diagnostic .person-detection-overlay {
+    display: none !important;
+}
+
+body.camera-diagnostic #exercise-view {
+    display: flex;
+}
+
+body.camera-diagnostic .exercise-container {
+    width: 100%;
+}
+
+body.camera-diagnostic .video-feed {
+    margin-top: 0;
+}
+
+body.camera-diagnostic.camera-stage-camera #pose-canvas,
+body.camera-diagnostic.camera-stage-callback #pose-canvas,
+body.camera-diagnostic.camera-stage-capture #pose-canvas,
+body.camera-diagnostic.camera-stage-pose #pose-canvas {
+    display: none;
+}
+
+.exercise-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 0;
+    flex-wrap: wrap;
+    gap: 15px;
+}
+
+.stats-panel {
+    display: flex;
+    justify-content: space-around;
+    margin: 30px 0;
+    flex-wrap: wrap;
+    gap: 20px;
+}
+
+.stat-box {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: var(--radius);
+    padding: 20px;
+    text-align: center;
+    min-width: 150px;
+    box-shadow: var(--shadow);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    animation: pulse 2s infinite;
+}
+
+.stat-box h3 {
+    font-size: 1.2rem;
+    margin-bottom: 10px;
+    opacity: 0.8;
+}
+
+.counter {
+    font-size: 2.5rem;
+    font-weight: bold;
+    color: var(--success);
+}
+
+.status {
+    font-size: 1.8rem;
+    font-weight: bold;
+    padding: 5px 10px;
+    border-radius: 6px;
+}
+
+.status.good {
+    background: rgba(76, 201, 240, 0.2);
+    color: var(--success);
+}
+
+.status.bad {
+    background: rgba(247, 37, 133, 0.2);
+    color: var(--warning);
+}
+
+.video-feed {
+    text-align: center;
+    margin: 30px 0;
+    position: relative;
+}
+
+.video-placeholder {
+    position: relative;
+    display: inline-block;
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.2);
+    width: 100%;
+    max-width: 640px;
+}
+
+/* Modified video and canvas styling */
+#camera-stream,
+#pose-canvas {
+    border-radius: var(--radius);
+    transform: scaleX(-1) translateZ(0);
+    /* Mirror for front camera; promote to compositor for smoother live video */
+    width: 100%;
+    height: auto;
+    max-height: 60vh;
+    object-fit: contain;
+}
+
+/* Keep the native camera feed smooth and draw pose landmarks as a
+   transparent inference-rate overlay. */
+#camera-stream {
+    display: block;
+    position: relative;
+    z-index: 1;
+    opacity: 1;
+    pointer-events: none;
+    will-change: transform;
+}
+
+#pose-canvas {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    pointer-events: none;
+}
+
+/* Never blur the live camera feed — CSS filter blur freezes weak GPUs.
+   Dimming is handled by the overlay card only. */
+#camera-stream.blur,
+#pose-canvas.blur {
+    filter: none;
+    -webkit-filter: none;
+}
+
+/* Person Detection Overlay */
+.person-detection-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 10;
+    border-radius: var(--radius);
+    opacity: 0;
+    transition: opacity 0.5s ease;
+    pointer-events: none;
+    /* Allow clicks to pass through */
+}
+
+.person-detection-overlay.active {
+    opacity: 1;
+}
+
+.overlay-content {
+    text-align: center;
+    color: white;
+    padding: 30px;
+    background: rgba(0, 0, 0, 0.7);
+    border-radius: 15px;
+    max-width: 90%;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+    border: 2px solid var(--warning);
+    animation: bounce 2s infinite;
+    /* Ensure the overlay content is never blurred */
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+}
+
+.exercise-icon {
+    max-width: 200px;
+    max-height: 200px;
+    margin-bottom: 20px;
+    border-radius: 10px;
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+    animation: float 3s ease-in-out infinite;
+}
+
+.overlay-content h3 {
+    margin-bottom: 15px;
+    font-size: 1.8rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.overlay-content p {
+    font-size: 1.2rem;
+    line-height: 1.5;
+    margin-bottom: 10px;
+}
+
+.exercise-name {
+    font-size: 1.4rem;
+    font-weight: bold;
+    color: var(--success);
+    margin: 10px 0;
+    text-transform: capitalize;
+}
+
+@keyframes bounce {
+
+    0%,
+    100% {
+        transform: translateY(0);
+    }
+
+    50% {
+        transform: translateY(-10px);
+    }
+}
+
+@keyframes float {
+    0% {
+        transform: translateY(0px);
+    }
+
+    50% {
+        transform: translateY(-10px);
+    }
+
+    100% {
+        transform: translateY(0px);
+    }
+}
+
+.feedback-panel {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin: 30px 0;
+    text-align: center;
+    box-shadow: var(--shadow);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.feedback-panel h3 {
+    margin-bottom: 15px;
+    font-size: 1.4rem;
+}
+
+.feedback-text {
+    font-size: 1.2rem;
+    min-height: 30px;
+    color: var(--success);
+}
+
+/* Animations */
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+    }
+
+    to {
+        opacity: 1;
+    }
+}
+
+@keyframes pulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(76, 201, 240, 0.4);
+    }
+
+    70% {
+        box-shadow: 0 0 0 10px rgba(76, 201, 240, 0);
+    }
+
+    100% {
+        box-shadow: 0 0 0 0 rgba(76, 201, 240, 0);
+    }
+}
+
+/* Mobile Info Panel Styles */
+.mobile-info-panel {
+    display: none;
+    background: rgba(0, 0, 0, 0.7);
+    border-radius: 10px;
+    padding: 15px;
+    margin: 0 15px;
+    z-index: 2;
+}
+
+.info-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    font-size: 1rem;
+}
+
+.info-row:last-child {
+    margin-bottom: 0;
+}
+
+.info-label {
+    font-weight: bold;
+    color: #4cc9f0;
+    width: 80px;
+}
+
+/* Desktop testing layout: keep the camera high and unobstructed, with
+   the live rep/form cards in a compact rail on its right. */
+@media (min-width: 769px) {
+    .exercise-container {
+        display: grid;
+        grid-template-columns: minmax(0, 640px) minmax(220px, 280px);
+        grid-template-areas:
+            "camera stats"
+            "feedback stats"
+            "details details";
+        justify-content: center;
+        align-items: start;
+        gap: 20px;
+    }
+
+    .video-feed {
+        grid-area: camera;
+        width: 100%;
+        margin: 20px 0 0;
+    }
+
+    .video-placeholder {
+        /* Keep the desktop width unchanged; increase only height 40%. */
+        max-width: 560px;
+        height: 588px;
+    }
+
+    #camera-stream {
+        margin: 0 auto;
+        height: 100% !important;
+        max-height: 588px;
+        object-fit: cover;
+    }
+
+    #pose-canvas {
+        display: block;
+        width: 100% !important;
+        height: 100% !important;
+        object-fit: cover;
+    }
+
+    .stats-panel {
+        grid-area: stats;
+        flex-direction: column;
+        flex-wrap: nowrap;
+        justify-content: flex-start;
+        width: 100%;
+        margin: 20px 0 0;
+        gap: 14px;
+    }
+
+    .stat-box {
+        width: 100%;
+        min-width: 0;
+        padding: 18px 14px;
+    }
+
+    .feedback-panel {
+        grid-area: feedback;
+        margin: 0;
+    }
+
+    .hammer-details {
+        grid-area: details;
+        width: 100%;
+        margin-top: 0;
+    }
+}
+
+/* Mobile styles */
+@media (max-width: 768px) {
+
+    html,
+    body {
+        height: 100%;
+        margin: 0;
+        padding: 0;
+    }
+
+    body.exercise-active {
+        overflow: hidden;
+    }
+
+    body.picker-active {
+        overflow-x: hidden;
+        overflow-y: auto;
+    }
+
+    #exercise-picker {
+        min-height: 100vh;
+        padding: 20px 16px 32px;
+    }
+
+    .hammer-config-row {
+        grid-template-columns: 1fr;
+    }
+
+    .container {
+        padding: 0;
+        height: 100vh;
+        max-width: 100%;
+        width: 100%;
+    }
+
+    #exercise-view {
+        height: 100vh;
+        display: none;
+        /* Keep hidden by default */
+        flex-direction: column;
+    }
+
+    /* Show exercise view when active */
+    #exercise-view.active {
+        display: flex;
+    }
+
+    /* Fixed header positioning - only visible when exercise is active */
+    .exercise-header {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 10;
+        background: rgba(0, 0, 0, 0.5);
+        padding: 10px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: auto;
+    }
+
+    .exercise-header h1 {
+        font-size: 1.5rem;
+        margin: 0;
+        text-align: center;
+    }
+
+    /* Hide stop button in header on mobile */
+    .exercise-header #stop-btn {
+        display: none;
+    }
+
+    .exercise-container {
+        position: relative;
+        height: 100vh;
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .video-feed {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 1;
+        margin: 0;
+    }
+
+    .video-placeholder {
+        width: 100%;
+        height: 100%;
+        border-radius: 0;
+        overflow: hidden;
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #000;
+    }
+
+    /* Preserve the original mobile camera framing: fill the viewport. */
+    #camera-stream,
+    #pose-canvas {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        max-width: none;
+        max-height: none;
+        object-fit: cover;
+        border-radius: 0;
+        transform: scaleX(-1);
+    }
+
+    #camera-stream {
+        z-index: 1;
+        opacity: 1;
+        pointer-events: none;
+    }
+
+    #pose-canvas {
+        z-index: 2;
+        pointer-events: none;
+    }
+
+    /* Hide desktop panels on mobile */
+    .stats-panel,
+    .feedback-panel {
+        display: none;
+    }
+
+    /* Show mobile info panel */
+    .mobile-info-panel {
+        display: block !important;
+        position: absolute;
+        bottom: 70px;
+        left: 0;
+        right: 0;
+        z-index: 5;
+        margin: 0 15px;
+        background: rgba(0, 0, 0, 0.7);
+        border-radius: 10px;
+        padding: 15px;
+    }
+
+    .info-row {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 8px;
+        font-size: 1rem;
+    }
+
+    .info-row:last-child {
+        margin-bottom: 0;
+    }
+
+    .info-label {
+        font-weight: bold;
+        color: #4cc9f0;
+        width: 80px;
+    }
+
+    /* Voice indicator for mobile */
+    .voice-indicator {
+        top: 10px;
+        right: 10px;
+        font-size: 0.8rem;
+        padding: 8px 12px;
+    }
+
+    /* Fixed stop button at bottom - only visible when exercise is active */
+    #stop-btn {
+        position: fixed;
+        bottom: 10px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 20;
+        max-width: 90%;
+        width: 90%;
+        margin: 0;
+        display: none;
+        /* Keep hidden by default */
+    }
+
+    /* Show stop button when exercise is active */
+    #exercise-view.active #stop-btn {
+        display: block;
+    }
+
+    .loader,
+    .camera-permission {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 100;
+        background: rgba(0, 0, 0, 0.9);
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+    }
+
+    .person-detection-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 3;
+    }
+
+    .overlay-content {
+        background: rgba(0, 0, 0, 0.8);
+        padding: 20px;
+        border-radius: 10px;
+        max-width: 90%;
+    }
+
+    .exercise-icon {
+        max-width: 150px;
+        max-height: 150px;
+    }
+
+    .overlay-content h3 {
+        font-size: 1.5rem;
+    }
+
+    .overlay-content p {
+        font-size: 1rem;
+    }
+
+    .exercise-name {
+        font-size: 1.2rem;
+    }
+}
+
+/* Loading Animation */
+.loader {
+    display: none;
+    text-align: center;
+    margin: 30px 0;
+}
+
+.loader-spinner {
+    width: 50px;
+    height: 50px;
+    border: 5px solid rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    border-top: 5px solid var(--primary);
+    animation: spin 1s linear infinite;
+    margin: 0 auto;
+}
+
+@keyframes spin {
+    0% {
+        transform: rotate(0deg);
+    }
+
+    100% {
+        transform: rotate(360deg);
+    }
+}
+
+/* Camera Permission Prompt */
+.camera-permission {
+    text-align: center;
+    padding: 20px;
+    background: rgba(247, 37, 133, 0.2);
+    border-radius: var(--radius);
+    margin: 20px 0;
+    display: none;
+}
+
+.camera-permission i {
+    font-size: 3rem;
+    margin-bottom: 15px;
+    color: var(--warning);
+}
+
+/* Pulse animation for rep counter */
+@keyframes pulseScale {
+
+    0%,
+    100% {
+        transform: scale(1);
+    }
+
+    50% {
+        transform: scale(1.1);
+    }
+}
+
+#rep-counter-mobile.pulse {
+    animation: pulseScale 0.5s ease-in-out;
+    display: inline-block;
+}
+
+img#exercise-icon {
+    background: white;
+}
+
+#exercise-picker {
+    max-width: 900px;
+    margin: 40px auto;
+    padding: 30px;
+    text-align: center;
+}
+
+#exercise-picker h2 {
+    font-size: 2.2rem;
+    margin-bottom: 10px;
+}
+
+#exercise-picker p {
+    opacity: 0.9;
+    margin-bottom: 30px;
+}
+
+.exercise-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 20px;
+}
+
+.exercise-card {
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: var(--radius);
+    padding: 20px;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.exercise-card:hover {
+    transform: translateY(-4px);
+    background: rgba(255, 255, 255, 0.2);
+    box-shadow: var(--shadow);
+}
+
+.exercise-card img {
+    width: 80px;
+    height: 80px;
+    object-fit: contain;
+    background: white;
+    border-radius: 50%;
+    margin-bottom: 12px;
+}
+
+.exercise-card h3 {
+    font-size: 1rem;
+}
+
+.hammer-config,
+.hammer-details {
+    margin-top: 22px;
+    padding: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: var(--radius);
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.hammer-config-row,
+.hammer-metrics {
+    display: grid;
+    gap: 12px;
+    margin: 16px 0;
+}
+
+.hammer-config-row {
+    /* Fixed two-column layout so mode changes never reflow controls. */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hammer-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hammer-config label,
+.hammer-field,
+.hammer-metric {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.hammer-field-label {
+    font-weight: 600;
+}
+
+.hammer-choice-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.hammer-choice {
+    width: 100%;
+    margin-bottom: 0;
+    padding: 10px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.92);
+    color: var(--dark);
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+    transform: none;
+    box-shadow: none;
+}
+
+.hammer-choice[aria-pressed="true"] {
+    background: var(--primary);
+    color: white;
+    border-color: var(--primary);
+}
+
+.hammer-choice:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 1);
+    transform: none;
+    border-color: var(--primary);
+}
+
+.hammer-choice[aria-pressed="true"]:hover:not(:disabled) {
+    background: var(--secondary);
+    border-color: var(--secondary);
+    color: white;
+}
+
+.hammer-choice:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+
+#multi-mode-side-field.is-disabled {
+    opacity: 0.55;
+    pointer-events: none;
+}
+
+#start-multi-mode-exercise {
+    width: 100%;
+    margin-top: 16px;
+    margin-bottom: 0;
+    color: white;
+    background: #118076;
+    cursor: pointer;
+    font-weight: 700;
+    transform: none;
+}
+
+.hammer-metric span:last-child {
+    font-size: 1.15rem;
+    font-weight: 700;
+    min-height: 1.4em;
+    font-variant-numeric: tabular-nums;
+    word-break: break-word;
+}
+
+.hammer-setup {
+    margin: 12px 0 0 20px;
+    text-align: left;
+}

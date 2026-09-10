@@ -28,9 +28,9 @@ async function createLandmarker(vision, modelUrl, delegate) {
         },
         runningMode: "VIDEO",
         numPoses: 1,
-        minPoseDetectionConfidence: 0.68,
-        minPosePresenceConfidence: 0.68,
-        minTrackingConfidence: 0.68,
+        minPoseDetectionConfidence: 0.5,
+        minPosePresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
         outputSegmentationMasks: false,
     });
 }
@@ -84,14 +84,22 @@ self.onmessage = async (event) => {
 
     try {
         const inferenceStartedAt = performance.now();
+        const diagnosticTrace = message.diagnosticTrace;
+        if (diagnosticTrace) {
+            diagnosticTrace.inferenceStartedAt = performance.timeOrigin + inferenceStartedAt;
+        }
         const result = poseLandmarker.detectForVideo(frame, message.timestampMs);
         const inferenceMs = performance.now() - inferenceStartedAt;
+        if (diagnosticTrace) {
+            diagnosticTrace.inferenceCompletedAt = performance.timeOrigin + performance.now();
+        }
         self.postMessage({
             type: "result",
             timestampMs: message.timestampMs,
             mediaTime: message.mediaTime,
             captureMs: message.captureMs,
             inferenceMs,
+            ...(diagnosticTrace ? { diagnosticTrace } : {}),
             landmarks: compactLandmarks(result.landmarks?.[0]),
             worldLandmarks: compactLandmarks(result.worldLandmarks?.[0]),
         });
