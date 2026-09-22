@@ -32,6 +32,11 @@ const requestedPoseIntervalMs = parsePoseIntervalMs(
 const poseCaptureIntervalMs = requestedPoseIntervalMs !== null
     ? requestedPoseIntervalMs
     : DEFAULT_POSE_CAPTURE_INTERVAL_MS;
+// A/B worker scheduling (?poseAbMode=):
+//   a = wait for inference, then capture the next fresh camera frame (default)
+//   b = keep one pre-captured frame pending while the worker runs (throughput test)
+// A avoids displaying a bitmap that has already waited behind another inference.
+const POSE_AB_MODE = poseDebugOptions.get('poseAbMode') === 'b' ? 'b' : 'a';
 const poseDiagnostics = window.createPoseDiagnostics?.(
     cameraMetricsEnabled ? '?poseDebug=1' : window.location.search
 );
@@ -42,24 +47,61 @@ window.__poseScheduler = {
     requestedIntervalMs: requestedPoseIntervalMs
 };
 let legacyDiagnosticTrace = null;
-// Prefer Full on desktop GPU paths for stabler joints; keep Lite on
-// Apple mobile (legacy) and when explicitly requested for weak devices.
+// Lite keeps the Android overlay responsive. Desktop keeps Full, while every
+// platform can still be overridden with ?poseModel=lite|full|heavy.
 const requestedPoseModel = poseDebugOptions.get('poseModel');
 const POSE_MODEL_VARIANT = requestedPoseModel === 'lite'
     ? 'lite'
-    : requestedPoseModel === 'full'
-        ? 'full'
-        : (typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent)
-            ? 'lite'
-            : 'full');
+    : requestedPoseModel === 'heavy'
+        ? 'heavy'
+        : requestedPoseModel === 'full'
+            ? 'full'
+            : (typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent)
+                ? 'lite'
+                : 'full');
 const BACKEND_URL = 'https://yalla-ai.onlinetestingserver.com';
 const API_BASE_URL = `${BACKEND_URL}/v1/exercise`;
+const POSE_MODEL_REVISION = POSE_MODEL_VARIANT === 'lite' ? '1' : 'latest';
+const POSE_CONFIDENCE_PROFILES = Object.freeze({
+    a: { detect: 0.5, presence: 0.5, track: 0.5 },
+    b: { detect: 0.6, presence: 0.6, track: 0.5 },
+    c: { detect: 0.65, presence: 0.65, track: 0.5 },
+    d: { detect: 0.7, presence: 0.65, track: 0.55 },
+    e: { detect: 0.65, presence: 0.7, track: 0.6 }
+});
+function parseUnitIntervalParam(name, fallback) {
+    const raw = poseDebugOptions.get(name);
+    if (raw === null || raw === '') {
+        return fallback;
+    }
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value < 0 || value > 1) {
+        return fallback;
+    }
+    return value;
+}
+const requestedPoseConfProfile = poseDebugOptions.get('poseConfProfile')?.toLowerCase();
+const activePoseConfProfile = POSE_CONFIDENCE_PROFILES[requestedPoseConfProfile] || null;
+const POSE_TASK_DETECTION_CONFIDENCE = parseUnitIntervalParam(
+    'poseDetect',
+    activePoseConfProfile?.detect ?? 0.65
+);
+const POSE_TASK_PRESENCE_CONFIDENCE = parseUnitIntervalParam(
+    'posePresence',
+    activePoseConfProfile?.presence ?? 0.65
+);
+const POSE_TASK_TRACKING_CONFIDENCE = parseUnitIntervalParam(
+    'poseTrack',
+    activePoseConfProfile?.track ?? 0.5
+);
+const TRACKING_POSE_CONFIDENCE = parseUnitIntervalParam('poseTrackingConf', 0.48);
+const FORM_POSE_CONFIDENCE = parseUnitIntervalParam('poseFormConf', 0.65);
 const POSE_MODEL_URL =
-    `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_${POSE_MODEL_VARIANT}/float16/latest/pose_landmarker_${POSE_MODEL_VARIANT}.task`;
-const DRAWING_UTILS_URL =
-    'https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js';
+    `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_${POSE_MODEL_VARIANT}/float16/${POSE_MODEL_REVISION}/pose_landmarker_${POSE_MODEL_VARIANT}.task`;
 const LEGACY_POSE_URL =
-    'https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js';
+    'https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/pose.js';
+const LEGACY_POSE_BASE =
+    'https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404';
 const runtimeScriptLoads = new Map();
 
 function loadRuntimeScript(url, ready) {
@@ -79,19 +121,11 @@ function loadRuntimeScript(url, ready) {
     return load;
 }
 
-function loadDrawingUtils() {
-    return loadRuntimeScript(
-        DRAWING_UTILS_URL,
-        () => typeof window.drawConnectors === 'function'
-            && typeof window.drawLandmarks === 'function'
-    );
-}
-
 async function loadLegacyPoseRuntime() {
-    await Promise.all([
-        loadDrawingUtils(),
-        loadRuntimeScript(LEGACY_POSE_URL, () => typeof window.Pose === 'function')
-    ]);
+    await loadRuntimeScript(
+        LEGACY_POSE_URL,
+        () => typeof window.Pose === 'function'
+    );
 }
 // Body + limbs only. Face mesh and hand fans make wrists look thick and
 // pull drawn hand tips into the wrist/elbow during curls.
@@ -104,75 +138,25 @@ const POSE_CONNECTIONS = [
 const SKELETON_LANDMARK_INDEXES = Object.freeze([
     11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32
 ]);
-// Elbows + wrists need higher display speed so curls do not trail
-// along the forearm toward the elbow.
-const FAST_DISPLAY_LANDMARK_INDEXES = Object.freeze(
-    new Set([13, 14, 15, 16])
-);
+const {
+    exercises,
+    resolveExercise,
+    isMultiModeExercise
+} = window.exerciseRegistry;
 
-const frontendAssetUrl = (path) =>
-    new URL(path, document.baseURI).href;
-
-const exerciseIcons = {
-    'barbell_biceps_curl_rules': frontendAssetUrl('./images/exercises/barbel-curls.png'),
-    'hammer_curl_rules': frontendAssetUrl('./images/exercises/hammercurl.png'),
-    'shoulder_front_raise_rules': frontendAssetUrl('./images/exercises/shoulderfrontraises.png'),
-    'shoulder_lateral_raise_rules': frontendAssetUrl('./images/exercises/literal_raises.png'),
-    'squat_rules': frontendAssetUrl('./images/exercises/squat.png'),
-    'pushup_rules': frontendAssetUrl('./images/exercises/pushups.png'),
-    'plank_rules': frontendAssetUrl('./images/exercises/plank.png'),
-    'deadlift_rules': frontendAssetUrl('./images/exercises/deadlift.png?v=2'),
-    'romanian_deadlift_rules': frontendAssetUrl('./images/exercises/deadlift.png?v=2'),
-    'leg_raise_rules': frontendAssetUrl('./images/exercises/leg-raises.png')
-};
-
-const exerciseDisplayNames = {
-    'barbell_biceps_curl_rules': 'Barbell Biceps Curl',
-    'hammer_curl_rules': 'Hammer Curl',
-    'shoulder_front_raise_rules': 'Shoulder Front Raises',
-    'shoulder_lateral_raise_rules': 'Shoulder Lateral Raises',
-    'squat_rules': 'Squat',
-    'pushup_rules': 'Push-Up',
-    'plank_rules': 'Plank',
-    'deadlift_rules': 'Deadlift',
-    'romanian_deadlift_rules': 'Romanian Deadlift',
-    'leg_raise_rules': 'Lying Leg Raises'
-};
-
-const exerciseApiNames = {
-    'barbell_biceps_curl_rules': 'barbell biceps curl',
-    'hammer_curl_rules': 'hammer_curl',
-    'shoulder_front_raise_rules': 'shoulder front raise',
-    'shoulder_lateral_raise_rules': 'shoulder lateral raise',
-    'squat_rules': 'squat',
-    'pushup_rules': 'push-up',
-    'plank_rules': 'plank',
-    'deadlift_rules': 'deadlift',
-    'romanian_deadlift_rules': 'romanian_deadlift',
-    'leg_raise_rules': 'leg_raise'
-};
-
-const multiModeExerciseKeys = new Set([
-    'hammer_curl_rules',
-    'shoulder_front_raise_rules',
-    'shoulder_lateral_raise_rules'
-]);
-
-function isMultiModeApiExercise(apiExercise) {
-    return [
-        'hammer_curl',
-        'shoulder front raise',
-        'shoulder lateral raise'
-    ].includes(apiExercise);
+function exerciseIconUrl(exercise) {
+    return exercise?.iconPath
+        ? new URL(exercise.iconPath, document.baseURI).href
+        : '';
 }
 
 function updateSessionUrl(id, exerciseKey) {
-    const apiExercise = exerciseApiNames[exerciseKey] || exerciseKey;
+    const apiExercise = resolveExercise(exerciseKey)?.apiName || exerciseKey;
     const params = new URLSearchParams({
         session_id: String(id),
         exercise: apiExercise
     });
-    if (isMultiModeApiExercise(apiExercise)) {
+    if (isMultiModeExercise(apiExercise)) {
         params.set('mode', multiModeMode);
         params.set('selected_side', multiModeSelectedSide);
     }
@@ -191,9 +175,8 @@ function notifyNativeApp(payload) {
 }
 
 function beginExerciseSession(selectedExerciseKey) {
-    exerciseName = Object.entries(exerciseApiNames).find(
-        ([, apiName]) => apiName === selectedExerciseKey
-    )?.[0] || selectedExerciseKey;
+    exerciseName = resolveExercise(selectedExerciseKey)?.key
+        || selectedExerciseKey;
     isPlankExercise = exerciseName.includes('plank');
 
     if (isPlankExercise) {
@@ -243,7 +226,7 @@ function beginExerciseSession(selectedExerciseKey) {
     } else if (exerciseName === 'leg_raise_rules') {
         positionInstructions.textContent =
             'Lie on your back, turn sideways to the camera, and keep both legs visible.';
-    } else if (multiModeExerciseKeys.has(exerciseName)) {
+    } else if (isMultiModeExercise(exerciseName)) {
         positionInstructions.textContent =
             'Use a front-facing view and keep both shoulders, elbows, wrists, and hips visible.';
     } else {
@@ -255,11 +238,12 @@ function beginExerciseSession(selectedExerciseKey) {
 }
 
 async function startExerciseFromBrowser(exerciseKey) {
-    const apiExercise = exerciseApiNames[exerciseKey];
-    if (!apiExercise) {
+    const exercise = resolveExercise(exerciseKey);
+    if (!exercise) {
         showError('Invalid exercise selected.');
         return;
     }
+    const apiExercise = exercise.apiName;
 
     try {
         const response = await fetch(`${API_BASE_URL}/start`, {
@@ -267,8 +251,8 @@ async function startExerciseFromBrowser(exerciseKey) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 exercise: apiExercise,
-                mode: isMultiModeApiExercise(apiExercise) ? multiModeMode : 'single',
-                selected_side: isMultiModeApiExercise(apiExercise)
+                mode: exercise.multiMode ? multiModeMode : 'single',
+                selected_side: exercise.multiMode
                     ? multiModeSelectedSide
                     : 'left'
             })
@@ -297,23 +281,24 @@ function showExercisePicker() {
     const grid = document.getElementById('exercise-grid');
     grid.innerHTML = '';
 
-    Object.entries(exerciseDisplayNames).forEach(([key, label]) => {
+    exercises.forEach((exercise) => {
+        const { key, label } = exercise;
         const card = document.createElement('button');
         card.type = 'button';
         card.className = 'exercise-card';
         card.innerHTML = `
-            <img src="${exerciseIcons[key] || ''}" alt="${label}">
+            <img src="${exerciseIconUrl(exercise)}" alt="${label}">
             <h3>${label}</h3>
         `;
         card.addEventListener('click', (event) => {
             event.currentTarget.blur();
             const config = document.getElementById('multi-mode-config');
-            if (multiModeExerciseKeys.has(key)) {
+            if (exercise.multiMode) {
                 pendingMultiModeExerciseKey = key;
                 document.getElementById('multi-mode-config-title').textContent =
-                    `${exerciseDisplayNames[key]} Setup`;
+                    `${label} Setup`;
                 document.getElementById('start-multi-mode-exercise').textContent =
-                    `Start ${exerciseDisplayNames[key]}`;
+                    `Start ${label}`;
                 config.hidden = false;
             } else {
                 config.hidden = true;
@@ -338,38 +323,35 @@ let poseWorker = null;
 let poseWorkerReady = false;
 let poseWorkerInitializationTimer = null;
 let poseFrameInFlight = false;
+let poseWorkerInferenceBusy = false;
+let pendingPoseWorkerSubmission = null;
 let posePipelineGeneration = 0;
 let posePipelineMode = 'none';
 let poseFallbackStarted = false;
 let poseBitmapFailureCount = 0;
 let poseWorkerFailureCount = 0;
-let poseAnimationFrame = null;
-let poseVideoFrameCallback = null;
+let poseFrameLoopController = null;
+let captureOnlyFrameLoopController = null;
 let lastSubmittedVideoTime = -1;
 let lastPoseCaptureAt = 0;
 let captureOnlyInFlight = false;
-let captureOnlyFrameCallback = null;
-let captureOnlyAnimationFrame = null;
 let poseCaptureCanvas = null;
 let poseCaptureCtx = null;
 let poseDelegate = 'unknown';
 let poseGpuFallbackReason = null;
-let posePerformanceSampleCount = 0;
-let poseCaptureTotalMs = 0;
-let poseInferenceTotalMs = 0;
-let poseResultAgeTotalMs = 0;
-let poseSkippedFrameCount = 0;
-let posePerformanceWindowStartedAt = 0;
 const POSE_PERFORMANCE_LOG_INTERVAL = 60;
 const POSE_ANALYSIS_MAX_DIMENSION = 416;
 const POSE_DRAW_MAX_DIMENSION = 640;
 const MAX_POSE_PIPELINE_FAILURES = 2;
+const POSE_WORKER_PROTOCOL_VERSION = 1;
+let nextPoseWorkerFrameId = 1;
 const CAMERA_VIDEO_CONSTRAINTS = Object.freeze({
     facingMode: 'user',
     width: { ideal: 480, max: 640 },
     height: { ideal: 360, max: 480 },
     frameRate: { ideal: 30, max: 30 }
 });
+const voiceFeedbackEnabled = poseDebugOptions.get('voice') !== '0';
 let camera = null;
 let cameraMetricsState = null;
 let cameraMetricsFrameCallback = null;
@@ -388,6 +370,10 @@ let pendingMultiModeExerciseKey = null;
 const KEYPOINT_SEND_INTERVAL_MS = 0;
 const MAX_WEBSOCKET_BUFFER_BYTES = 64 * 1024;
 let nextKeypointSendAt = null;
+const posePerformanceMonitor = createPosePerformanceMonitor({
+    sampleSize: POSE_PERFORMANCE_LOG_INTERVAL,
+    onWindow: reportPosePerformance
+});
 
 function advanceKeypointDeadline(now, deadline) {
     if (!(KEYPOINT_SEND_INTERVAL_MS > 0)) return now;
@@ -408,11 +394,13 @@ const deadliftLandmarkVisibilityThreshold = 0.5;
 // A stricter UI-only threshold caused valid iOS legacy-pose frames to
 // remain behind the positioning overlay while the backend accepted them.
 const trackingLandmarkVisibilityThreshold = 0.45;
+const DISPLAY_POSE_CONFIDENCE = TRACKING_POSE_CONFIDENCE;
+const POSE_LOCK_LANDMARK_CONFIDENCE = TRACKING_POSE_CONFIDENCE;
+const POSE_REACQUIRE_FRAMES = 3;
 const VALID_POSE_COLOR = '#00FF00';
 const INVALID_POSE_COLOR = '#FF2D2D';
 const SKELETON_CONNECTOR_STYLE = Object.freeze({ lineWidth: 1.5 });
 const SKELETON_LANDMARK_STYLE = Object.freeze({
-    lineWidth: 1,
     radius: 2
 });
 // null means no pose frame has confirmed visibility yet. Starting at
@@ -423,8 +411,6 @@ let formValidationReceived = false;
 let occlusionSent = false;
 let deadliftTrackingStarted = false;
 
-// Camera ready flags
-let cameraReady = false;
 let firstPoseResultReceived = false;
 
 // Timer variables for plank exercises
@@ -452,6 +438,7 @@ class FeedbackVoice {
     }
 
     speak(feedbackText) {
+        if (!voiceFeedbackEnabled) return;
         if (!feedbackText) return;
 
         if (feedbackText === "No feedback yet" || feedbackText === "No person detected") {
@@ -537,6 +524,10 @@ const cameraPermission = document.querySelector('.camera-permission');
 const personDetectionOverlay = document.querySelector('.person-detection-overlay');
 const counterLabel = document.getElementById('counter-label');
 const counterLabelMobile = document.getElementById('counter-label-mobile');
+const mobileRepCounter = document.getElementById('rep-counter-mobile');
+const mobileFormStatus = document.getElementById('form-status-mobile');
+const mobileFeedbackText = document.getElementById('feedback-text-mobile');
+const mobileExerciseName = document.getElementById('exercise-name-mobile');
 const exerciseIcon = document.getElementById('exercise-icon');
 const overlayExerciseName = document.getElementById('overlay-exercise-name');
 const noPersonText = document.getElementById('no-person-text');
@@ -545,35 +536,128 @@ const cameraDiagnosticsOutput = document.getElementById('camera-diagnostics-outp
 
 console.log(' Exercise page loaded - initializing...', exerciseIcon);
 
-// MediaPipe Tasks always includes visibility, while the legacy Pose
-// result used by iOS/WKWebView can omit it. Keep the framing check and
-// the keypoints sent to the backend on the same fallback semantics.
+function setRepDisplay(value, { alternating = false, time = false, pulse = false } = {}) {
+    const text = String(value);
+    repCounter.textContent = text;
+    counterLabel.textContent = time
+        ? 'TIME'
+        : alternating ? 'LEFT | RIGHT' : 'REPS';
+    if (mobileRepCounter) {
+        const changed = mobileRepCounter.textContent !== text;
+        mobileRepCounter.textContent = text;
+        if (pulse && changed) {
+            mobileRepCounter.classList.add('pulse');
+            setTimeout(() => mobileRepCounter.classList.remove('pulse'), 1000);
+        }
+    }
+    if (counterLabelMobile) {
+        counterLabelMobile.textContent = time
+            ? 'Time:'
+            : alternating ? 'Left | Right:' : 'Reps:';
+    }
+}
+
+function setFormDisplay(text, good = false) {
+    formStatus.textContent = text;
+    formStatus.className = `status ${good ? 'good' : 'bad'}`;
+    if (mobileFormStatus) {
+        mobileFormStatus.textContent = text;
+        mobileFormStatus.className = good ? 'good' : 'bad';
+    }
+}
+
+function setFeedbackDisplay(text, { animate = false } = {}) {
+    const targets = [feedbackText, mobileFeedbackText].filter(Boolean);
+    targets.forEach((target) => {
+        target.textContent = text;
+        if (animate) target.classList.add('is-updating');
+    });
+    if (animate) {
+        setTimeout(() => {
+            targets.forEach((target) => target.classList.remove('is-updating'));
+        }, 100);
+    }
+}
+
+function setDetailValues(values) {
+    for (const [id, value] of Object.entries(values)) {
+        const element = document.getElementById(id);
+        if (element) element.textContent = value;
+    }
+}
+
+// Canonical confidence for gating: min(visibility, presence) when both exist.
+function getPoseConfidence(landmark) {
+    if (!landmark) return 0;
+
+    const visibility = Number(landmark.visibility);
+    const presence = Number(landmark.presence);
+
+    const hasVisibility = Number.isFinite(visibility);
+    const hasPresence = Number.isFinite(presence);
+
+    if (hasVisibility && hasPresence) {
+        return Math.min(visibility, presence);
+    }
+
+    if (hasVisibility) return visibility;
+    if (hasPresence) return presence;
+
+    return posePipelineMode === 'legacy' ? 1 : 0;
+}
+
 function getLandmarkVisibility(landmark) {
-    if (landmark?.visibility != null) {
-        const visibility = Number(landmark.visibility);
-        if (Number.isFinite(visibility)) return visibility;
-    }
-
-    if (landmark?.presence != null) {
-        const presence = Number(landmark.presence);
-        if (Number.isFinite(presence)) return presence;
-    }
-
-    return 1.0;
+    return getPoseConfidence(landmark);
 }
 
 function isLandmarkVisible(landmarks, index, threshold) {
     return (
         index < landmarks.length
-        && getLandmarkVisibility(landmarks[index]) >= threshold
+        && getPoseConfidence(landmarks[index]) >= threshold
     );
+}
+
+const barbellPoseContinuity = createPoseContinuityTracker({
+    landmarkConfidence: POSE_LOCK_LANDMARK_CONFIDENCE,
+    reacquireFrames: POSE_REACQUIRE_FRAMES,
+    getConfidence: getPoseConfidence,
+    isRepHardLocked: () => Boolean(getPosePersonRoiState?.()?.repHardLock),
+    onReset: () => globalThis.resetPosePersonRoi?.()
+});
+
+function resetPosePersonLock() {
+    barbellPoseContinuity.reset();
+}
+
+function shouldSendPoseToBackend(landmarks) {
+    if (!exerciseUsesPoseContinuityGate()) {
+        return true;
+    }
+    return barbellPoseContinuity.accepts(landmarks);
+}
+
+function hasDrawablePose(landmarks) {
+    // Rendering stays independent from backend identity acquisition so the
+    // local overlay never appears frozen while the lock is reacquiring.
+    return Boolean(landmarks?.length);
+}
+
+function exerciseUsesPoseContinuityGate() {
+    return exerciseName === 'barbell_biceps_curl_rules';
 }
 
 // Check if whole body is visible
 function isWholeBodyVisible(landmarks) {
     if (!landmarks || landmarks.length === 0) return false;
 
-    const isMultiModeExercise = multiModeExerciseKeys.has(exerciseName);
+    if (exerciseName === 'barbell_biceps_curl_rules') {
+        const curlIndices = [11, 12, 13, 14, 15, 16, 23, 24];
+        return curlIndices.every((index) =>
+            isLandmarkVisible(landmarks, index, FORM_POSE_CONFIDENCE)
+        );
+    }
+
+    const multiModeActive = isMultiModeExercise(exerciseName);
     if (exerciseName === 'hammer_curl_rules' && multiModeMode === 'single') {
         const sideIndices = multiModeSelectedSide === 'right'
             ? [12, 14, 16, 24]
@@ -642,7 +726,7 @@ function isWholeBodyVisible(landmarks) {
             )
         );
     }
-    const keyPointIndices = isMultiModeExercise
+    const keyPointIndices = multiModeActive
         ? [11, 12, 13, 14, 15, 16, 23, 24]
         : [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
     let visiblePoints = 0;
@@ -659,7 +743,7 @@ function isWholeBodyVisible(landmarks) {
 
     const visibilityPercentage = visiblePoints / keyPointIndices.length;
     return visibilityPercentage >= (
-        isMultiModeExercise ? 0.85 : bodyVisibilityThreshold
+        multiModeActive ? 0.85 : bodyVisibilityThreshold
     );
 }
 
@@ -744,25 +828,17 @@ document.addEventListener('DOMContentLoaded', () => {
 function showError(message) {
     const errorDiv = document.createElement('div');
     errorDiv.className = 'error-message';
-    errorDiv.style.position = 'fixed';
-    errorDiv.style.top = '50%';
-    errorDiv.style.left = '50%';
-    errorDiv.style.transform = 'translate(-50%, -50%)';
-    errorDiv.style.background = '#282828';
-    errorDiv.style.color = 'white';
-    errorDiv.style.padding = '20px';
-    errorDiv.style.borderRadius = '10px';
-    errorDiv.style.textAlign = 'center';
-    errorDiv.style.zIndex = '1000';
-    errorDiv.style.width = '80%';
-    errorDiv.innerHTML = `<h3>Error</h3><p>${message}</p>`;
+    const title = document.createElement('h3');
+    title.textContent = 'Error';
+    const description = document.createElement('p');
+    description.textContent = message;
+    errorDiv.append(title, description);
 
     document.body.appendChild(errorDiv);
 
     const closeButton = document.createElement('button');
+    closeButton.className = 'error-message-close';
     closeButton.textContent = 'Close';
-    closeButton.style.marginTop = '20px';
-    closeButton.style.backgroundColor = '#118076';
     closeButton.onclick = function () {
         notifyNativeApp({ event: "stop_exercise" });
         document.body.removeChild(errorDiv);
@@ -774,35 +850,18 @@ function showError(message) {
 // Reset exercise state
 function resetExerciseState() {
     const showAlternatingArmCounts =
-        multiModeExerciseKeys.has(exerciseName)
+        isMultiModeExercise(exerciseName)
         && multiModeMode === 'alternating';
-    repCounter.textContent = showAlternatingArmCounts ? "0 | 0" : "0";
-    document.getElementById('counter-label').textContent =
-        showAlternatingArmCounts ? "LEFT | RIGHT" : "REPS";
-    formStatus.textContent = "CHECK";
-    formStatus.className = "status bad";
-    feedbackText.textContent = "No feedback yet";
-
-    const mobileRepCounter = document.getElementById('rep-counter-mobile');
-    const mobileFormStatus = document.getElementById('form-status-mobile');
-    const mobileFeedbackText = document.getElementById('feedback-text-mobile');
-    const mobileExerciseName = document.getElementById('exercise-name-mobile');
-
-    if (mobileRepCounter) {
-        mobileRepCounter.textContent = showAlternatingArmCounts ? "0 | 0" : "0";
+    setRepDisplay(showAlternatingArmCounts ? '0 | 0' : '0', {
+        alternating: showAlternatingArmCounts,
+        time: isPlankExercise
+    });
+    setFormDisplay('CHECK');
+    setFeedbackDisplay('No feedback yet');
+    const activeExercise = resolveExercise(exerciseName);
+    if (mobileExerciseName) {
+        mobileExerciseName.textContent = activeExercise?.label || "Exercise";
     }
-    const mobileCounterLabel = document.getElementById('counter-label-mobile');
-    if (mobileCounterLabel) {
-        mobileCounterLabel.textContent = showAlternatingArmCounts
-            ? "Left | Right:"
-            : "Reps:";
-    }
-    if (mobileFormStatus) {
-        mobileFormStatus.textContent = "CHECK";
-        mobileFormStatus.className = "bad";
-    }
-    if (mobileFeedbackText) mobileFeedbackText.textContent = "No feedback yet";
-    if (mobileExerciseName) mobileExerciseName.textContent = exerciseDisplayNames[exerciseName] || "Exercise";
 
     feedbackVoice.reset();
 
@@ -816,6 +875,7 @@ function resetExerciseState() {
     overlayActive = false;
     occlusionSent = false;
     deadliftTrackingStarted = false;
+    resetPosePersonLock();
 
     lastFeedbackText = "";
     lastFormStatus = "";
@@ -833,15 +893,15 @@ function resetExerciseState() {
     updateTimerDisplay();
 
     // Set the exercise icon and name in the overlay
-    if (exerciseIcons[exerciseName]) {
-        exerciseIcon.src = exerciseIcons[exerciseName];
-        exerciseIcon.alt = exerciseDisplayNames[exerciseName] + ' Icon';
+    if (activeExercise?.iconPath) {
+        exerciseIcon.src = exerciseIconUrl(activeExercise);
+        exerciseIcon.alt = `${activeExercise.label} Icon`;
     }
     if (overlayExerciseName) {
-        overlayExerciseName.textContent = exerciseDisplayNames[exerciseName] || exerciseName;
+        overlayExerciseName.textContent = activeExercise?.label || exerciseName;
     }
 
-    for (const [id, value] of Object.entries({
+    setDetailValues({
         'hammer-left-angle': '—',
         'hammer-right-angle': '—',
         'hammer-left-reps': '0',
@@ -869,10 +929,7 @@ function resetExerciseState() {
         'rdl-side-alignment': '—',
         'rdl-state': 'not_ready',
         'rdl-invalid': 'None'
-    })) {
-        const element = document.getElementById(id);
-        if (element) element.textContent = value;
-    }
+    });
 }
 
 // Show exercise view with animation
@@ -881,7 +938,6 @@ function showExerciseView() {
     exerciseView.classList.add('active');
     loader.style.display = 'flex';
     cameraPermission.style.display = 'none';
-    cameraReady = false;
     firstPoseResultReceived = false;
     wholeBodyDetected = null;
     updateWholeBodyDetectionUI(false);
@@ -1029,28 +1085,8 @@ function waitForCameraDimensions(timeoutMs = 5000) {
 }
 
 function cancelPoseFrameLoop() {
-    if (
-        poseVideoFrameCallback !== null
-        && typeof cameraStream.cancelVideoFrameCallback === 'function'
-    ) {
-        cameraStream.cancelVideoFrameCallback(poseVideoFrameCallback);
-        poseVideoFrameCallback = null;
-    }
-    if (poseAnimationFrame !== null) {
-        cancelAnimationFrame(poseAnimationFrame);
-        poseAnimationFrame = null;
-    }
-    if (
-        captureOnlyFrameCallback !== null
-        && typeof cameraStream.cancelVideoFrameCallback === 'function'
-    ) {
-        cameraStream.cancelVideoFrameCallback(captureOnlyFrameCallback);
-        captureOnlyFrameCallback = null;
-    }
-    if (captureOnlyAnimationFrame !== null) {
-        cancelAnimationFrame(captureOnlyAnimationFrame);
-        captureOnlyAnimationFrame = null;
-    }
+    poseFrameLoopController?.stop();
+    captureOnlyFrameLoopController?.stop();
     captureOnlyInFlight = false;
 }
 
@@ -1058,11 +1094,14 @@ function stopPosePipeline() {
     posePipelineGeneration += 1;
     cancelPoseFrameLoop();
     poseFrameInFlight = false;
+    poseWorkerInferenceBusy = false;
+    clearPendingPoseWorkerSubmission();
     poseWorkerReady = false;
     posePipelineMode = 'none';
     poseFallbackStarted = false;
     poseBitmapFailureCount = 0;
     poseWorkerFailureCount = 0;
+    nextPoseWorkerFrameId = 1;
     lastSubmittedVideoTime = -1;
     lastPoseCaptureAt = 0;
     if (poseWorkerInitializationTimer !== null) {
@@ -1081,7 +1120,7 @@ function stopPosePipeline() {
         }
     }
     pose = null;
-    resetAndroidPoseSmoothing();
+    resetPoseTrackingState();
 }
 
 function showPosePipelineError(error) {
@@ -1135,7 +1174,7 @@ async function initializeLegacyPose(reason) {
     }
     pose = null;
     posePipelineMode = 'none';
-    resetAndroidPoseSmoothing();
+    resetPoseTrackingState();
 
     try {
         if (cameraDiagnosticMode === 'pose') {
@@ -1151,8 +1190,7 @@ async function initializeLegacyPose(reason) {
         }
 
         const legacyPose = new window.Pose({
-            locateFile: (file) =>
-                `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+            locateFile: (file) => `${LEGACY_POSE_BASE}/${file}`
         });
         legacyPose.setOptions({
             // Use MediaPipe's balanced defaults on iOS. A lite model
@@ -1172,7 +1210,11 @@ async function initializeLegacyPose(reason) {
                 legacyDiagnosticTrace.inferenceCompletedAt = poseDiagnostics.epoch();
             }
             poseDiagnostics?.received(legacyDiagnosticTrace, Boolean(results.poseLandmarks), results.poseLandmarks);
-            onPoseResults(results, legacyDiagnosticTrace);
+            onPoseResults(
+                results,
+                legacyDiagnosticTrace,
+                performance.now()
+            );
         });
 
         pose = legacyPose;
@@ -1198,9 +1240,7 @@ async function initializeLegacyPose(reason) {
     }
 }
 
-function getPoseAnalysisSize() {
-    const sourceWidth = cameraStream.videoWidth;
-    const sourceHeight = cameraStream.videoHeight;
+function getPoseAnalysisSize(sourceWidth, sourceHeight) {
     const longestSide = Math.max(sourceWidth, sourceHeight);
     if (!longestSide) {
         return null;
@@ -1215,16 +1255,98 @@ function getPoseAnalysisSize() {
     };
 }
 
+function shouldCapturePersonRoi() {
+    return (
+        exerciseUsesPoseContinuityGate()
+        && typeof shouldUseRoiCapture === 'function'
+        && shouldUseRoiCapture()
+    );
+}
+
+function buildPoseWorkerCropMeta(cropPixels, videoWidth, videoHeight) {
+    if (!cropPixels || !videoWidth || !videoHeight) {
+        return null;
+    }
+    return {
+        x: cropPixels.x,
+        y: cropPixels.y,
+        width: cropPixels.width,
+        height: cropPixels.height,
+        videoWidth,
+        videoHeight
+    };
+}
+
+function remapPoseResultsFromInferenceCrop(results, cropMeta) {
+    if (
+        !results?.poseLandmarks?.length
+        || !cropMeta
+        || typeof remapLandmarksFromCrop !== 'function'
+    ) {
+        return results;
+    }
+    return {
+        ...results,
+        poseLandmarks: remapLandmarksFromCrop(
+            results.poseLandmarks,
+            cropMeta,
+            cropMeta.videoWidth,
+            cropMeta.videoHeight
+        )
+    };
+}
+
+function handlePoseRoiPersonLost() {
+    resetPosePersonLock();
+    personDetected = false;
+    missingFrames = MISSING_THRESHOLD;
+    wholeBodyDetected = false;
+    latestFormOk = false;
+    formValidationReceived = false;
+    resetPoseTrackingState();
+    handleNoPersonDetected();
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'no_person' }));
+    }
+    const overlayTitle = personDetectionOverlay?.querySelector?.('h2');
+    const overlayText = personDetectionOverlay?.querySelector?.('p');
+    if (overlayTitle) {
+        overlayTitle.textContent = 'Position yourself';
+    }
+    if (overlayText) {
+        overlayText.textContent = 'Step back into frame so your full upper body is visible.';
+    }
+    personDetectionOverlay?.classList?.add('active');
+}
+
 async function capturePoseAnalysisBitmap(timing = null) {
+    const videoWidth = cameraStream.videoWidth;
+    const videoHeight = cameraStream.videoHeight;
+    let cropPixels = null;
+    if (shouldCapturePersonRoi() && videoWidth && videoHeight) {
+        cropPixels = getActivePersonCropPixels?.(videoWidth, videoHeight) || null;
+    }
+    if (timing) {
+        timing.cropPixels = cropPixels;
+    }
+
     if (poseDiagnostics && poseDebugOptions.get('poseCpuInput') === 'source') {
         const bitmapStartedAt = performance.now();
-        const bitmap = await createImageBitmap(cameraStream);
+        const bitmap = cropPixels
+            ? await createImageBitmap(
+                cameraStream,
+                cropPixels.x,
+                cropPixels.y,
+                cropPixels.width,
+                cropPixels.height
+            )
+            : await createImageBitmap(cameraStream);
         const createImageBitmapMs = performance.now() - bitmapStartedAt;
         if (timing) {
             timing.drawImageMs = 0;
             timing.createImageBitmapMs = createImageBitmapMs;
             timing.captureMs = createImageBitmapMs;
-            timing.capturePath = 'video-full';
+            timing.capturePath = cropPixels ? 'roi-full' : 'video-full';
         }
         poseDiagnostics?.sample('drawImageMs', 0);
         poseDiagnostics?.sample('createImageBitmapMs', createImageBitmapMs);
@@ -1232,39 +1354,60 @@ async function capturePoseAnalysisBitmap(timing = null) {
         return bitmap;
     }
 
-    const size = getPoseAnalysisSize();
+    const sourceWidth = cropPixels ? cropPixels.width : videoWidth;
+    const sourceHeight = cropPixels ? cropPixels.height : videoHeight;
+    const size = getPoseAnalysisSize(sourceWidth, sourceHeight);
     if (!size) {
         const bitmapStartedAt = performance.now();
-        const bitmap = await createImageBitmap(cameraStream);
+        const bitmap = cropPixels
+            ? await createImageBitmap(
+                cameraStream,
+                cropPixels.x,
+                cropPixels.y,
+                cropPixels.width,
+                cropPixels.height
+            )
+            : await createImageBitmap(cameraStream);
         const createImageBitmapMs = performance.now() - bitmapStartedAt;
         if (timing) {
             timing.drawImageMs = 0;
             timing.createImageBitmapMs = createImageBitmapMs;
             timing.captureMs = createImageBitmapMs;
-            timing.capturePath = 'video-full';
+            timing.capturePath = cropPixels ? 'roi-full' : 'video-full';
         }
         poseDiagnostics?.sample('drawImageMs', 0);
         poseDiagnostics?.sample('createImageBitmapMs', createImageBitmapMs);
         recordCaptureTiming(0, createImageBitmapMs);
         return bitmap;
     }
+
+    const resizeOptions = {
+        resizeWidth: size.width,
+        resizeHeight: size.height,
+        resizeQuality: 'low'
+    };
 
     // One-shot resize avoids a main-thread drawImage + second bitmap copy.
     // Fall back to the tiny canvas path when resize options are rejected
     // (some Android WebViews) so analysis still stays downscaled.
     try {
         const bitmapStartedAt = performance.now();
-        const bitmap = await createImageBitmap(cameraStream, {
-            resizeWidth: size.width,
-            resizeHeight: size.height,
-            resizeQuality: 'low'
-        });
+        const bitmap = cropPixels
+            ? await createImageBitmap(
+                cameraStream,
+                cropPixels.x,
+                cropPixels.y,
+                cropPixels.width,
+                cropPixels.height,
+                resizeOptions
+            )
+            : await createImageBitmap(cameraStream, resizeOptions);
         const createImageBitmapMs = performance.now() - bitmapStartedAt;
         if (timing) {
             timing.drawImageMs = 0;
             timing.createImageBitmapMs = createImageBitmapMs;
             timing.captureMs = createImageBitmapMs;
-            timing.capturePath = 'video-resize';
+            timing.capturePath = cropPixels ? 'roi-resize' : 'video-resize';
         }
         poseDiagnostics?.sample('drawImageMs', 0);
         poseDiagnostics?.sample('createImageBitmapMs', createImageBitmapMs);
@@ -1295,7 +1438,21 @@ async function capturePoseAnalysisBitmap(timing = null) {
         });
     }
     const drawStartedAt = performance.now();
-    poseCaptureCtx.drawImage(cameraStream, 0, 0, size.width, size.height);
+    if (cropPixels) {
+        poseCaptureCtx.drawImage(
+            cameraStream,
+            cropPixels.x,
+            cropPixels.y,
+            cropPixels.width,
+            cropPixels.height,
+            0,
+            0,
+            size.width,
+            size.height
+        );
+    } else {
+        poseCaptureCtx.drawImage(cameraStream, 0, 0, size.width, size.height);
+    }
     const drawImageMs = performance.now() - drawStartedAt;
     const bitmapStartedAt = performance.now();
     const bitmap = await createImageBitmap(poseCaptureCanvas);
@@ -1304,7 +1461,7 @@ async function capturePoseAnalysisBitmap(timing = null) {
         timing.drawImageMs = drawImageMs;
         timing.createImageBitmapMs = createImageBitmapMs;
         timing.captureMs = drawImageMs + createImageBitmapMs;
-        timing.capturePath = 'canvas';
+        timing.capturePath = cropPixels ? 'roi-canvas' : 'canvas';
     }
     poseDiagnostics?.sample('drawImageMs', drawImageMs);
     poseDiagnostics?.sample('createImageBitmapMs', createImageBitmapMs);
@@ -1342,6 +1499,54 @@ function averageOf(values) {
     return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function clearPendingPoseWorkerSubmission() {
+    if (!pendingPoseWorkerSubmission) return;
+    pendingPoseWorkerSubmission.frame?.close?.();
+    pendingPoseWorkerSubmission = null;
+}
+
+function postPoseWorkerSubmission(submission, worker = poseWorker) {
+    if (!worker || !submission?.frame) return false;
+    worker.postMessage(
+        {
+            type: 'frame',
+            protocolVersion: POSE_WORKER_PROTOCOL_VERSION,
+            frameId: submission.frameId,
+            frame: submission.frame,
+            timestampMs: submission.timestampMs,
+            mediaTime: submission.mediaTime,
+            captureMs: submission.captureMs,
+            ...(submission.cropPixels
+                ? { cropPixels: submission.cropPixels }
+                : {}),
+            ...(submission.diagnosticTrace
+                ? { diagnosticTrace: submission.diagnosticTrace }
+                : {})
+        },
+        [submission.frame]
+    );
+    poseWorkerInferenceBusy = true;
+    poseDiagnostics?.count('submitted');
+    return true;
+}
+
+function flushPendingPoseWorkerSubmission() {
+    const pending = pendingPoseWorkerSubmission;
+    if (!pending || !poseWorker || !exerciseActive) return;
+    pendingPoseWorkerSubmission = null;
+    try {
+        postPoseWorkerSubmission(pending);
+    } catch (error) {
+        pending.frame?.close?.();
+        handlePoseWorkerFailure({
+            stage: 'inference',
+            message: error?.message || 'Unable to submit pending pose frame'
+        });
+    } finally {
+        pending.frame = null;
+    }
+}
+
 function shouldSkipPoseCaptureForBudget(now = performance.now()) {
     if (!(poseCaptureIntervalMs > 0)) return false;
     if (now - lastPoseCaptureAt < poseCaptureIntervalMs) {
@@ -1371,9 +1576,12 @@ async function submitPoseFrame(timestampMs, mediaTime, metadata) {
         || !cameraStream.videoHeight
     ) {
         if (poseFrameInFlight) {
-            poseSkippedFrameCount += 1;
+            posePerformanceMonitor.skipped();
             poseDiagnostics?.count('busySkips');
-            poseDiagnostics?.event('skipped', { reason: 'inferenceBusy', mediaTime });
+            poseDiagnostics?.event('skipped', {
+                reason: POSE_AB_MODE === 'b' ? 'captureBusy' : 'inferenceBusy',
+                mediaTime,
+            });
         }
         return false;
     }
@@ -1442,22 +1650,51 @@ async function submitPoseFrame(timestampMs, mediaTime, metadata) {
             poseDiagnostics?.count('obsoleteCaptureDrops');
             return false;
         }
+        const cropPixels = buildPoseWorkerCropMeta(
+            captureTiming.cropPixels,
+            cameraStream.videoWidth,
+            cameraStream.videoHeight
+        );
+        const frameId = nextPoseWorkerFrameId++;
         poseDiagnostics?.configure({ analysisWidth: frame.width, analysisHeight: frame.height });
         if (diagnosticTrace) diagnosticTrace.submittedAt = poseDiagnostics.epoch();
-        frameWorker.postMessage(
-            {
-                type: 'frame',
+        if (POSE_AB_MODE === 'b' && poseWorkerInferenceBusy) {
+            if (pendingPoseWorkerSubmission) {
+                pendingPoseWorkerSubmission.frame?.close?.();
+                poseDiagnostics?.count('workerBusyDrops');
+                poseDiagnostics?.event('dropped', {
+                    reason: 'workerCoalesced',
+                    mediaTime: pendingPoseWorkerSubmission.mediaTime,
+                });
+            }
+            pendingPoseWorkerSubmission = {
+                frameId,
                 frame,
                 timestampMs,
                 mediaTime,
                 captureMs,
-                ...(diagnosticTrace ? { diagnosticTrace } : {})
-            },
-            [frame]
-        );
+                cropPixels,
+                diagnosticTrace,
+            };
+            frame = null;
+            poseFrameInFlight = false;
+            poseBitmapFailureCount = 0;
+            return true;
+        }
+        postPoseWorkerSubmission({
+            frameId,
+            frame,
+            timestampMs,
+            mediaTime,
+            captureMs,
+            cropPixels,
+            diagnosticTrace
+        }, frameWorker);
         frame = null; // Ownership transferred; the worker closes it.
-        poseDiagnostics?.count('submitted');
         poseBitmapFailureCount = 0;
+        if (POSE_AB_MODE === 'b') {
+            poseFrameInFlight = false;
+        }
         return true;
     } catch (error) {
         if (generation !== posePipelineGeneration) return false;
@@ -1476,7 +1713,7 @@ async function submitPoseFrame(timestampMs, mediaTime, metadata) {
     }
 }
 
-function scheduleNextPoseFrame() {
+function isPoseFrameLoopActive() {
     const pipelineReady =
         (
             posePipelineMode === 'worker'
@@ -1486,72 +1723,60 @@ function scheduleNextPoseFrame() {
             posePipelineMode === 'legacy'
             && pose
         );
-    if (!exerciseActive || !camera || !pipelineReady) {
-        return;
-    }
-    // requestVideoFrameCallback is exposed by some WKWebView versions
-    // where camera-backed callbacks are unreliable. MediaPipe's
-    // supported JS example uses an animation-driven camera loop, so
-    // keep that compatible path for Apple mobile devices.
-    if (
-        !isAppleMobileDevice()
-        && typeof cameraStream.requestVideoFrameCallback === 'function'
-    ) {
-        poseVideoFrameCallback =
-            cameraStream.requestVideoFrameCallback(runPoseVideoFrameLoop);
-    } else {
-        poseAnimationFrame = requestAnimationFrame(runPoseAnimationFrameLoop);
-    }
+    return Boolean(exerciseActive && camera && pipelineReady);
 }
 
-async function runPoseVideoFrameLoop(now, metadata) {
-    poseVideoFrameCallback = null;
-    poseDiagnostics?.videoFrame(metadata);
-    // Keep the camera callback chain ahead of capture/inference work.
-    scheduleNextPoseFrame();
-    // Let the browser paint/composite the live <video> before main-thread
-    // snapshot work when the Scheduling API is available.
-    if (typeof scheduler !== 'undefined' && typeof scheduler.yield === 'function') {
-        try {
-            await scheduler.yield();
-        } catch (_) {
-            // Ignore yield failures; capture proceeds immediately.
+function isCaptureOnlyFrameLoopActive() {
+    return Boolean(
+        exerciseActive
+        && camera
+        && cameraDiagnosticMode === 'capture'
+    );
+}
+
+function ensureCameraFrameLoops() {
+    if (poseFrameLoopController && captureOnlyFrameLoopController) return;
+    if (typeof createCameraFrameLoop !== 'function') {
+        throw new Error('Pose frame-loop runtime is unavailable.');
+    }
+
+    poseFrameLoopController = createCameraFrameLoop({
+        video: cameraStream,
+        isActive: isPoseFrameLoopActive,
+        // Some WKWebView versions expose camera-backed callbacks that do not
+        // fire reliably, so Apple mobile keeps the animation-frame fallback.
+        useVideoFrameCallback: () => !isAppleMobileDevice(),
+        onFrame(now, metadata) {
+            if (metadata) {
+                poseDiagnostics?.videoFrame(metadata);
+            } else {
+                poseDiagnostics?.count('animationCallbacks');
+            }
+            // A live WKWebView video may report a fixed currentTime. The
+            // in-flight guard, rather than media-time de-duplication, protects
+            // the animation-frame path from overlapping inference.
+            return submitPoseFrame(
+                now,
+                metadata ? Number(metadata.mediaTime) : undefined,
+                metadata
+            );
         }
-    }
-    submitPoseFrame(now, Number(metadata?.mediaTime), metadata);
-}
+    });
 
-function runPoseAnimationFrameLoop(timestampMs) {
-    poseAnimationFrame = null;
-    poseDiagnostics?.count('animationCallbacks');
-    // A live getUserMedia video can report a fixed currentTime in
-    // WKWebView. Do not de-duplicate RAF frames by media time; the
-    // in-flight guard already prevents overlapping inference.
-    scheduleNextPoseFrame();
-    submitPoseFrame(timestampMs);
+    captureOnlyFrameLoopController = createCameraFrameLoop({
+        video: cameraStream,
+        isActive: isCaptureOnlyFrameLoopActive,
+        useVideoFrameCallback: () => !isAppleMobileDevice(),
+        onFrame: runCaptureOnlySample
+    });
 }
 
 function startPoseFrameLoop() {
     cancelPoseFrameLoop();
     lastSubmittedVideoTime = -1;
     lastPoseCaptureAt = 0;
-    scheduleNextPoseFrame();
-}
-
-function scheduleNextCaptureOnlyFrame() {
-    if (!exerciseActive || !camera || cameraDiagnosticMode !== 'capture') {
-        return;
-    }
-    if (
-        !isAppleMobileDevice()
-        && typeof cameraStream.requestVideoFrameCallback === 'function'
-    ) {
-        captureOnlyFrameCallback =
-            cameraStream.requestVideoFrameCallback(runCaptureOnlyVideoFrameLoop);
-    } else {
-        captureOnlyAnimationFrame =
-            requestAnimationFrame(runCaptureOnlyAnimationFrameLoop);
-    }
+    ensureCameraFrameLoops();
+    poseFrameLoopController.start();
 }
 
 async function runCaptureOnlySample(now, metadata) {
@@ -1596,30 +1821,12 @@ async function runCaptureOnlySample(now, metadata) {
     }
 }
 
-async function runCaptureOnlyVideoFrameLoop(now, metadata) {
-    captureOnlyFrameCallback = null;
-    scheduleNextCaptureOnlyFrame();
-    if (typeof scheduler !== 'undefined' && typeof scheduler.yield === 'function') {
-        try {
-            await scheduler.yield();
-        } catch (_) {
-            // Ignore yield failures; capture proceeds immediately.
-        }
-    }
-    runCaptureOnlySample(now, metadata);
-}
-
-function runCaptureOnlyAnimationFrameLoop(timestampMs) {
-    captureOnlyAnimationFrame = null;
-    scheduleNextCaptureOnlyFrame();
-    runCaptureOnlySample(timestampMs);
-}
-
 function startCaptureOnlyLoop() {
     cancelPoseFrameLoop();
     lastPoseCaptureAt = 0;
     exerciseActive = true;
-    scheduleNextCaptureOnlyFrame();
+    ensureCameraFrameLoops();
+    captureOnlyFrameLoopController.start();
 }
 
 document.addEventListener('visibilitychange', () => {
@@ -1643,53 +1850,11 @@ document.addEventListener('visibilitychange', () => {
     }
 });
 
-function resetPosePerformanceWindow() {
-    posePerformanceSampleCount = 0;
-    poseCaptureTotalMs = 0;
-    poseInferenceTotalMs = 0;
-    poseResultAgeTotalMs = 0;
-    poseSkippedFrameCount = 0;
-    posePerformanceWindowStartedAt = performance.now();
-}
-
-function emitPosePerformanceTelemetry() {
-    if (posePerformanceSampleCount < POSE_PERFORMANCE_LOG_INTERVAL) {
-        return;
-    }
-
-    const elapsedMs = Math.max(
-        1,
-        performance.now() - posePerformanceWindowStartedAt
-    );
+function reportPosePerformance(windowMetrics) {
     const metrics = {
         model: POSE_MODEL_VARIANT,
         delegate: poseDelegate,
-        inputFps: Number(
-            (
-                posePerformanceSampleCount
-                * 1000
-                / elapsedMs
-            ).toFixed(1)
-        ),
-        averageCaptureMs: Number(
-            (
-                poseCaptureTotalMs
-                / posePerformanceSampleCount
-            ).toFixed(1)
-        ),
-        averageInferenceMs: Number(
-            (
-                poseInferenceTotalMs
-                / posePerformanceSampleCount
-            ).toFixed(1)
-        ),
-        averageResultAgeMs: Number(
-            (
-                poseResultAgeTotalMs
-                / posePerformanceSampleCount
-            ).toFixed(1)
-        ),
-        skippedVideoFrames: poseSkippedFrameCount,
+        ...windowMetrics,
         gpuFallback: Boolean(poseGpuFallbackReason)
     };
     console.info('Pose performance', metrics);
@@ -1699,7 +1864,6 @@ function emitPosePerformanceTelemetry() {
             ...metrics
         }));
     }
-    resetPosePerformanceWindow();
 }
 
 function selectCameraCapabilities(capabilities) {
@@ -1935,7 +2099,6 @@ async function initializeIsolatedCameraDiagnostic() {
             await startCameraStream({ poseEnabled: false });
             startCaptureOnlyLoop();
             loader.style.display = 'none';
-            cameraReady = true;
         } else {
             exerciseActive = true;
             await initializeMediaPipe();
@@ -1998,8 +2161,8 @@ async function startCameraStream({ poseEnabled = true } = {}) {
     if (poseEnabled) startPoseFrameLoop();
     else {
         loader.style.display = 'none';
-        cameraReady = true;
     }
+    console.log('Camera settings:', trackSettings);
     console.log('Camera started successfully', {
         videoWidth: cameraStream.videoWidth,
         videoHeight: cameraStream.videoHeight,
@@ -2010,23 +2173,36 @@ async function startCameraStream({ poseEnabled = true } = {}) {
     if (poseEnabled) setTimeout(() => {
         if (!firstPoseResultReceived) {
             loader.style.display = 'none';
-            cameraReady = true;
         }
     }, 5000);
+}
+
+function handlePoseWorkerFailure({
+    stage,
+    message,
+    forceFallback = false
+}) {
+    poseFrameInFlight = false;
+    poseWorkerInferenceBusy = false;
+    clearPendingPoseWorkerSubmission();
+    if (stage === 'initialization' || forceFallback) {
+        clearTimeout(poseWorkerInitializationTimer);
+        poseWorkerInitializationTimer = null;
+    }
+    console.error(`Pose worker ${stage} error:`, message);
+    poseWorkerFailureCount += 1;
+    if (
+        forceFallback
+        || stage === 'initialization'
+        || poseWorkerFailureCount >= MAX_POSE_PIPELINE_FAILURES
+    ) {
+        initializeLegacyPose(message || `Worker ${stage} failed`);
+    }
 }
 
 // Initialize the supported MediaPipe Tasks Pose Landmarker in a worker.
 async function initializeMediaPipe() {
     if (poseWorker || pose || poseFallbackStarted) return;
-
-    if (cameraDiagnosticMode !== 'pose') {
-        try {
-            await loadDrawingUtils();
-        } catch (error) {
-            showPosePipelineError(error);
-            return;
-        }
-    }
 
     // WKWebView can expose Worker/createImageBitmap even when video
     // ImageBitmaps do not produce reliable frames for Tasks Vision.
@@ -2064,6 +2240,14 @@ async function initializeMediaPipe() {
     poseWorker.onmessage = (event) => {
         if (generation !== posePipelineGeneration || activeWorker !== poseWorker || !exerciseActive) return;
         const message = event.data || {};
+        if (message.protocolVersion !== POSE_WORKER_PROTOCOL_VERSION) {
+            handlePoseWorkerFailure({
+                stage: message.type === 'ready' ? 'initialization' : 'inference',
+                message: `Unsupported pose-worker protocol: ${message.protocolVersion}`,
+                forceFallback: true
+            });
+            return;
+        }
         if (message.type === 'ready') {
             if (poseWorkerInitializationTimer !== null) {
                 clearTimeout(poseWorkerInitializationTimer);
@@ -2072,14 +2256,20 @@ async function initializeMediaPipe() {
             poseDelegate = message.delegate || 'unknown';
             poseDiagnostics?.configure({ pipeline: 'worker', model: POSE_MODEL_URL,
                 delegate: poseDelegate, gpuFallbackReason: message.gpuFallbackReason || null,
-                displaySmoothing: { ...ANDROID_DISPLAY_SMOOTHING },
                 processingLandmarks: 'raw',
                 analysisThrottleMs: poseCaptureIntervalMs,
                 poseCaptureIntervalMs,
-                detectionConfidence: 0.5, presenceConfidence: 0.5,
-                trackingConfidence: 0.5 });
+                poseAbMode: POSE_AB_MODE,
+                tasksRunningMode: 'VIDEO',
+                poseModelVariant: POSE_MODEL_VARIANT,
+                detectionConfidence: POSE_TASK_DETECTION_CONFIDENCE,
+                presenceConfidence: POSE_TASK_PRESENCE_CONFIDENCE,
+                trackingConfidence: POSE_TASK_TRACKING_CONFIDENCE,
+                trackingLandmarkConfidence: TRACKING_POSE_CONFIDENCE,
+                formLandmarkConfidence: FORM_POSE_CONFIDENCE,
+                poseConfProfile: requestedPoseConfProfile || 'c-default' });
             poseGpuFallbackReason = message.gpuFallbackReason || null;
-            resetPosePerformanceWindow();
+            posePerformanceMonitor.reset();
             console.info(`Pose Landmarker ready: ${POSE_MODEL_VARIANT} model, ${poseDelegate} delegate`);
             if (poseGpuFallbackReason) {
                 console.warn(
@@ -2097,7 +2287,12 @@ async function initializeMediaPipe() {
             return;
         }
         if (message.type === 'result') {
-            poseFrameInFlight = false;
+            poseWorkerInferenceBusy = false;
+            if (POSE_AB_MODE !== 'b') {
+                poseFrameInFlight = false;
+            } else {
+                flushPendingPoseWorkerSubmission();
+            }
             poseDiagnostics?.received(message.diagnosticTrace, Boolean(message.landmarks), message.landmarks);
             const captureMs = Number(message.captureMs) || 0;
             const inferenceMs = Number(message.inferenceMs) || 0;
@@ -2105,49 +2300,50 @@ async function initializeMediaPipe() {
                 0,
                 performance.now() - Number(message.timestampMs || 0)
             );
-            if (posePerformanceSampleCount === 0) {
-                posePerformanceWindowStartedAt = performance.now();
-            }
-            posePerformanceSampleCount += 1;
-            poseCaptureTotalMs += captureMs;
-            poseInferenceTotalMs += inferenceMs;
-            poseResultAgeTotalMs += resultAgeMs;
-            emitPosePerformanceTelemetry();
-            onPoseResults({
-                poseLandmarks: message.landmarks,
-                poseWorldLandmarks: message.worldLandmarks
-            }, message.diagnosticTrace);
+            posePerformanceMonitor.record({
+                captureMs,
+                inferenceMs,
+                resultAgeMs
+            });
+            onPoseResults(
+                remapPoseResultsFromInferenceCrop(
+                    {
+                        poseLandmarks: message.landmarks,
+                        poseWorldLandmarks: message.worldLandmarks
+                    },
+                    message.cropPixels
+                ),
+                message.diagnosticTrace,
+                message.timestampMs,
+                message.mediaTime
+            );
             return;
         }
         if (message.type === 'error') {
-            poseFrameInFlight = false;
-            if (message.stage === 'initialization') {
-                clearTimeout(poseWorkerInitializationTimer);
-                poseWorkerInitializationTimer = null;
-            }
-            console.error(`Pose ${message.stage} error:`, message.message);
-            poseWorkerFailureCount += 1;
-            if (
-                message.stage === 'initialization'
-                || poseWorkerFailureCount >= MAX_POSE_PIPELINE_FAILURES
-            ) {
-                initializeLegacyPose(
-                    message.message || `Worker ${message.stage} failed`
-                );
-            }
+            handlePoseWorkerFailure({
+                stage: message.stage || 'inference',
+                message: message.message
+            });
         }
     };
     poseWorker.onerror = (error) => {
         if (generation !== posePipelineGeneration || activeWorker !== poseWorker || !exerciseActive) return;
-        poseFrameInFlight = false;
-        clearTimeout(poseWorkerInitializationTimer);
-        poseWorkerInitializationTimer = null;
-        console.error('Pose worker error:', error.message || error);
-        initializeLegacyPose(
-            error?.message || 'Pose worker failed to load'
-        );
+        handlePoseWorkerFailure({
+            stage: 'runtime',
+            message: error?.message || 'Pose worker failed to load',
+            forceFallback: true
+        });
     };
-    poseWorker.postMessage({ type: 'init', modelUrl: POSE_MODEL_URL });
+    poseWorker.postMessage({
+        type: 'init',
+        protocolVersion: POSE_WORKER_PROTOCOL_VERSION,
+        modelUrl: POSE_MODEL_URL,
+        landmarkerOptions: {
+            minPoseDetectionConfidence: POSE_TASK_DETECTION_CONFIDENCE,
+            minPosePresenceConfidence: POSE_TASK_PRESENCE_CONFIDENCE,
+            minTrackingConfidence: POSE_TASK_TRACKING_CONFIDENCE
+        }
+    });
     poseWorkerInitializationTimer = setTimeout(() => {
         if (generation === posePipelineGeneration && !poseWorkerReady && posePipelineMode === 'worker') {
             initializeLegacyPose('Pose worker initialization timed out');
@@ -2259,154 +2455,46 @@ function drawShoulderRaiseHeightGuide(canvasCtx, landmarks) {
 
 }
 
-// Tasks Vision has no smoothLandmarks option. This filter is deliberately
-// display-only: counting and visibility decisions use the raw worker result.
-function createPoseSmoother({
-    // Body-sync first: follow raw joints when visible; only hold the last
-    // good point on dropout. Optional One Euro remains for explicit tests.
-    followRaw = true,
-    minCutoff = 5.5,
-    beta = 1.2,
-    derivateCutoff = 1,
-    minVisibility = 0.4,
-    resumeVisibility = 0.55,
-    maxSpeed = Infinity,
-    fastMaxSpeed = Infinity,
-    fastLandmarkIndexes = null,
-    now = () => performance.now()
-} = {}) {
-    let filters = null;
-    let lastAtMs = null;
-    const fastIndexes = fastLandmarkIndexes == null
-        ? new Set([13, 14, 15, 16])
-        : fastLandmarkIndexes;
-    const alpha = (cutoff, dt) => 1 / (1 + 1 / (2 * Math.PI * cutoff * dt));
-    const axisValue = (value, axis, dt, speedLimit) => {
-        if (!Number.isFinite(value)) return value;
-        if (axis.hat == null) {
-            axis.hat = value;
-            axis.dHat = 0;
-            return value;
-        }
-        const dValue = (value - axis.hat) / dt;
-        axis.dHat += alpha(derivateCutoff, dt) * (dValue - axis.dHat);
-        const cutoff = minCutoff + beta * Math.abs(axis.dHat);
-        let next = axis.hat + alpha(cutoff, dt) * (value - axis.hat);
-        if (Number.isFinite(speedLimit) && speedLimit > 0) {
-            const maxStep = speedLimit * dt;
-            const delta = next - axis.hat;
-            if (delta > maxStep) next = axis.hat + maxStep;
-            else if (delta < -maxStep) next = axis.hat - maxStep;
-        }
-        axis.hat = next;
-        return axis.hat;
-    };
-    const rememberAxis = (value, axis) => {
-        if (!Number.isFinite(value)) return;
-        axis.hat = value;
-        axis.dHat = 0;
-    };
-    return {
-        reset() {
-            filters = null;
-            lastAtMs = null;
-        },
-        apply(landmarks) {
-            if (!landmarks?.length) return landmarks;
-            const clockMs = now();
-            const dt = lastAtMs == null
-                ? 1 / 30
-                : Math.min(0.2, Math.max(1 / 120, (clockMs - lastAtMs) / 1000));
-            lastAtMs = clockMs;
-            if (!filters || filters.length !== landmarks.length) {
-                filters = landmarks.map((landmark) => ({
-                    x: { hat: null, dHat: 0 },
-                    y: { hat: null, dHat: 0 },
-                    z: { hat: null, dHat: 0 },
-                    tracking: (landmark.visibility ?? 1) >= resumeVisibility
-                }));
-            }
-            return landmarks.map((landmark, index) => {
-                const axis = filters[index];
-                const visibility = landmark.visibility ?? 1;
-                // Hysteresis: once a joint drops out, require a clearer
-                // reappearance before it can yank the drawn skeleton.
-                if (axis.tracking) {
-                    if (visibility < minVisibility) axis.tracking = false;
-                } else if (visibility >= resumeVisibility) {
-                    axis.tracking = true;
-                }
-                if (!axis.tracking) {
-                    return {
-                        x: axis.x.hat ?? landmark.x,
-                        y: axis.y.hat ?? landmark.y,
-                        z: axis.z.hat ?? (landmark.z || 0),
-                        visibility,
-                        presence: landmark.presence ?? 1
-                    };
-                }
-                if (followRaw) {
-                    rememberAxis(landmark.x, axis.x);
-                    rememberAxis(landmark.y, axis.y);
-                    rememberAxis(landmark.z || 0, axis.z);
-                    return {
-                        x: landmark.x,
-                        y: landmark.y,
-                        z: landmark.z || 0,
-                        visibility,
-                        presence: landmark.presence ?? 1
-                    };
-                }
-                const speedLimit = fastIndexes?.has?.(index)
-                    ? fastMaxSpeed
-                    : maxSpeed;
-                return {
-                    x: axisValue(landmark.x, axis.x, dt, speedLimit),
-                    y: axisValue(landmark.y, axis.y, dt, speedLimit),
-                    z: axisValue(landmark.z || 0, axis.z, dt, speedLimit),
-                    visibility,
-                    presence: landmark.presence ?? 1
-                };
-            });
-        }
-    };
+function resetPoseTrackingState() {
+    resetPosePersonLock();
 }
 
-const ANDROID_DISPLAY_SMOOTHING = Object.freeze({
-    followRaw: true,
-    minCutoff: 5.5,
-    beta: 1.2,
-    derivateCutoff: 1,
-    minVisibility: 0.4,
-    resumeVisibility: 0.55,
-    maxSpeed: Infinity,
-    fastMaxSpeed: Infinity
-});
-const androidDisplayPoseSmoother = createPoseSmoother(
-    ANDROID_DISPLAY_SMOOTHING
-);
+function drawPoseConnections(ctx, landmarks, connections, options = {}) {
+    if (!landmarks?.length) return;
 
-function resetAndroidPoseSmoothing() {
-    androidDisplayPoseSmoother.reset();
-}
+    const width = ctx.canvas.width;
+    const height = ctx.canvas.height;
+    const threshold = options.confidence ?? DISPLAY_POSE_CONFIDENCE;
 
-function getPoseLandmarkViews(results) {
-    const rawLandmarks = results.poseLandmarks;
-    const rawWorldLandmarks = results.poseWorldLandmarks || [];
-    const displayLandmarks =
-        posePipelineMode === 'worker' && rawLandmarks
-            ? androidDisplayPoseSmoother.apply(rawLandmarks)
-            : rawLandmarks;
+    ctx.save();
+    ctx.strokeStyle = options.color || VALID_POSE_COLOR;
+    ctx.lineWidth = options.lineWidth || SKELETON_CONNECTOR_STYLE.lineWidth;
 
-    // No current canvas element consumes world-space landmarks. Keep the
-    // display view explicit without spending time filtering unused data.
-    const displayWorldLandmarks = rawWorldLandmarks;
-    return {
-        rawLandmarks,
-        displayLandmarks,
-        rawWorldLandmarks,
-        displayWorldLandmarks
-    };
+    for (const [a, b] of connections) {
+        const p1 = landmarks[a];
+        const p2 = landmarks[b];
+        if (!p1 || !p2) continue;
+        if (
+            getPoseConfidence(p1) < threshold
+            || getPoseConfidence(p2) < threshold
+        ) {
+            continue;
+        }
+        if (
+            !Number.isFinite(p1.x)
+            || !Number.isFinite(p1.y)
+            || !Number.isFinite(p2.x)
+            || !Number.isFinite(p2.y)
+        ) {
+            continue;
+        }
+        ctx.beginPath();
+        ctx.moveTo(p1.x * width, p1.y * height);
+        ctx.lineTo(p2.x * width, p2.y * height);
+        ctx.stroke();
+    }
+
+    ctx.restore();
 }
 
 function drawSkeletonLandmarks(canvasCtx, landmarks, { color, fillColor, radius }) {
@@ -2416,7 +2504,7 @@ function drawSkeletonLandmarks(canvasCtx, landmarks, { color, fillColor, radius 
     canvasCtx.fillStyle = fillColor || color;
     for (const index of SKELETON_LANDMARK_INDEXES) {
         const landmark = landmarks[index];
-        if (!landmark || (landmark.visibility ?? 1) < 0.5) continue;
+        if (!landmark || getPoseConfidence(landmark) < DISPLAY_POSE_CONFIDENCE) continue;
         if (!Number.isFinite(landmark.x) || !Number.isFinite(landmark.y)) continue;
         canvasCtx.beginPath();
         canvasCtx.arc(
@@ -2436,13 +2524,14 @@ function renderIsolatedCanvasDiagnostic(results, diagnosticTrace) {
     canvasCtx.save();
     canvasCtx.clearRect(0, 0, poseCanvas.width, poseCanvas.height);
     if (results.poseLandmarks) {
-        const { rawLandmarks, displayLandmarks } = getPoseLandmarkViews(results);
-        poseDiagnostics?.displayed(rawLandmarks, displayLandmarks);
-        drawConnectors(canvasCtx, displayLandmarks, POSE_CONNECTIONS, {
+        const landmarks = results.poseLandmarks;
+        poseDiagnostics?.displayed(landmarks, landmarks);
+        drawPoseConnections(canvasCtx, landmarks, POSE_CONNECTIONS, {
             color: VALID_POSE_COLOR,
-            ...SKELETON_CONNECTOR_STYLE
+            ...SKELETON_CONNECTOR_STYLE,
+            confidence: DISPLAY_POSE_CONFIDENCE
         });
-        drawSkeletonLandmarks(canvasCtx, displayLandmarks, {
+        drawSkeletonLandmarks(canvasCtx, landmarks, {
             color: VALID_POSE_COLOR,
             fillColor: VALID_POSE_COLOR,
             ...SKELETON_LANDMARK_STYLE
@@ -2452,8 +2541,119 @@ function renderIsolatedCanvasDiagnostic(results, diagnosticTrace) {
     canvasCtx.restore();
 }
 
+function landmarksToKeypoints(landmarks = []) {
+    return landmarks.map((landmark) => [
+        landmark.x,
+        landmark.y,
+        landmark.z || 0,
+        getLandmarkVisibility(landmark)
+    ]);
+}
+
+function renderPoseOverlay(canvasCtx, landmarks, bodyVisible, diagnosticTrace) {
+    poseDiagnostics?.displayed(landmarks, landmarks);
+    if (hasDrawablePose(landmarks)) {
+        const poseColor = bodyVisible && formValidationReceived && latestFormOk
+            ? VALID_POSE_COLOR
+            : INVALID_POSE_COLOR;
+        drawPoseConnections(canvasCtx, landmarks, POSE_CONNECTIONS, {
+            color: poseColor,
+            ...SKELETON_CONNECTOR_STYLE,
+            confidence: DISPLAY_POSE_CONFIDENCE
+        });
+        drawSkeletonLandmarks(canvasCtx, landmarks, {
+            color: poseColor,
+            fillColor: poseColor,
+            ...SKELETON_LANDMARK_STYLE
+        });
+        if (bodyVisible) {
+            drawShoulderRaiseHeightGuide(canvasCtx, landmarks);
+        }
+    }
+    if (poseDiagnostics && exerciseUsesPoseContinuityGate()) {
+        drawPersonRoiDebug?.(
+            canvasCtx,
+            cameraStream.videoWidth,
+            cameraStream.videoHeight
+        );
+    }
+    poseDiagnostics?.drawn(diagnosticTrace);
+}
+
+function sendPoseKeypoints({
+    landmarks,
+    worldLandmarks,
+    bodyVisible,
+    sendPoseToBackend,
+    sendTimestampMs,
+    mediaTime,
+    diagnosticTrace
+}) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+    const sendClockMs = performance.now();
+    const keypointSendDue =
+        nextKeypointSendAt === null || sendClockMs >= nextKeypointSendAt;
+    const websocketReady = ws.bufferedAmount < MAX_WEBSOCKET_BUFFER_BYTES;
+    if (keypointSendDue && websocketReady && sendPoseToBackend) {
+        const diagnostic = poseDiagnostics?.sent(
+            diagnosticTrace,
+            ws.bufferedAmount
+        );
+        ws.send(JSON.stringify({
+            type: 'keypoints',
+            keypoints: landmarksToKeypoints(landmarks),
+            world_keypoints: landmarksToKeypoints(worldLandmarks),
+            exercise: exerciseName,
+            source_timestamp_ms: sendTimestampMs,
+            timestamp: sendTimestampMs / 1000,
+            ...(Number.isFinite(mediaTime) ? { media_time: mediaTime } : {}),
+            ...(diagnostic ? { diagnostic } : {})
+        }));
+        nextKeypointSendAt = advanceKeypointDeadline(
+            sendClockMs,
+            nextKeypointSendAt
+        );
+    } else if (keypointSendDue && websocketReady) {
+        poseDiagnostics?.count('poseContinuitySendSkips');
+    } else {
+        poseDiagnostics?.count(
+            websocketReady ? 'sendCadenceSkips' : 'sendBufferSkips'
+        );
+    }
+
+    // Soft notify once; server warns without wiping the active rep cycle.
+    if (!bodyVisible && exerciseActive && !occlusionSent) {
+        ws.send(JSON.stringify({ type: 'occlusion' }));
+        occlusionSent = true;
+    } else if (bodyVisible) {
+        occlusionSent = false;
+    }
+}
+
+function handleMissingPoseFrame() {
+    missingFrames += 1;
+    wholeBodyDetected = false;
+    latestFormOk = false;
+    formValidationReceived = false;
+    updateWholeBodyDetectionUI(false, false);
+
+    if (missingFrames < MISSING_THRESHOLD || !personDetected) return;
+    personDetected = false;
+    resetPoseTrackingState();
+    handleNoPersonDetected();
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'no_person' }));
+    }
+}
+
 // Process pose results
-function onPoseResults(results, diagnosticTrace) {
+function onPoseResults(
+    results,
+    diagnosticTrace,
+    sourceTimestampMs = null,
+    mediaTime = null
+) {
     const onPoseStartedAt = performance.now();
     let canvasMs = 0;
     let uiMs = 0;
@@ -2462,7 +2662,6 @@ function onPoseResults(results, diagnosticTrace) {
     if (!firstPoseResultReceived && results.poseLandmarks) {
         firstPoseResultReceived = true;
         loader.style.display = 'none';
-        cameraReady = true;
         console.log('First pose result received, camera is ready', {
             imageLandmarks: results.poseLandmarks.length,
             worldLandmarks: results.poseWorldLandmarks?.length || 0
@@ -2497,7 +2696,9 @@ function onPoseResults(results, diagnosticTrace) {
         }
 
         canvasCtx = poseCanvas.getContext('2d');
-        const currentTimestamp = Date.now();
+        const sendTimestampMs = Number.isFinite(sourceTimestampMs)
+            ? sourceTimestampMs
+            : performance.now();
 
         const canvasStartedAt = performance.now();
         canvasCtx.save();
@@ -2505,71 +2706,52 @@ function onPoseResults(results, diagnosticTrace) {
 
         if (results.poseLandmarks) {
             missingFrames = 0;
-            const {
-                rawLandmarks,
-                displayLandmarks,
-                rawWorldLandmarks
-            } = getPoseLandmarkViews(results);
+            const rawLandmarks = results.poseLandmarks;
+            const rawWorldLandmarks = results.poseWorldLandmarks || [];
+
+            // Render the worker landmark directly. A previous arm-refinement
+            // heuristic predicted wrists from the elbow and could make a real
+            // upward curl look magnetically attached to the upper arm.
+            const landmarks = rawLandmarks;
+
+            if (exerciseUsesPoseContinuityGate()) {
+                const roiUpdate = updatePosePersonRoiFromLandmarks?.(
+                    landmarks,
+                    {
+                        minConfidence: FORM_POSE_CONFIDENCE,
+                        now: performance.now()
+                    }
+                );
+                if (roiUpdate?.phase === 'lost') {
+                    handlePoseRoiPersonLost();
+                    canvasMs = performance.now() - canvasStartedAt;
+                    canvasCtx.restore();
+                    return;
+                }
+            }
+
+            const sendPoseToBackend = shouldSendPoseToBackend(rawLandmarks);
+            if (!sendPoseToBackend) {
+                poseDiagnostics?.count('poseContinuityRejects');
+            }
 
             if (!personDetected) {
                 const uiStartedAt = performance.now();
                 personDetected = true;
                 latestFormOk = false;
                 formValidationReceived = false;
-                if (formStatus.textContent !== 'CHECK') {
-                    formStatus.textContent = 'CHECK';
-                }
-                formStatus.className = 'status bad';
-                if (feedbackText.textContent !== 'Checking exercise posture') {
-                    feedbackText.textContent = 'Checking exercise posture';
-                }
+                setFormDisplay('CHECK');
+                setFeedbackDisplay('Checking exercise posture');
                 uiMs += performance.now() - uiStartedAt;
             }
 
-            const keypoints = rawLandmarks.map(landmark => [
-                landmark.x,
-                landmark.y,
-                landmark.z || 0,
-                getLandmarkVisibility(landmark)
-            ]);
-            const worldKeypoints = rawWorldLandmarks.map(landmark => [
-                landmark.x,
-                landmark.y,
-                landmark.z || 0,
-                getLandmarkVisibility(landmark)
-            ]);
-
-            const bodyVisible = isWholeBodyVisible(rawLandmarks);
-            poseDiagnostics?.displayed(rawLandmarks, displayLandmarks);
-            const poseIsValid =
-                bodyVisible
-                && formValidationReceived
-                && latestFormOk;
-            const poseColor = poseIsValid
-                ? VALID_POSE_COLOR
-                : INVALID_POSE_COLOR;
-            drawConnectors(
+            const bodyVisible = isWholeBodyVisible(landmarks);
+            renderPoseOverlay(
                 canvasCtx,
-                displayLandmarks,
-                POSE_CONNECTIONS,
-                { color: poseColor, ...SKELETON_CONNECTOR_STYLE }
+                landmarks,
+                bodyVisible,
+                diagnosticTrace
             );
-            drawSkeletonLandmarks(
-                canvasCtx,
-                displayLandmarks,
-                {
-                    color: poseColor,
-                    fillColor: poseColor,
-                    ...SKELETON_LANDMARK_STYLE
-                }
-            );
-            if (bodyVisible) {
-                drawShoulderRaiseHeightGuide(
-                    canvasCtx,
-                    displayLandmarks
-                );
-            }
-            poseDiagnostics?.drawn(diagnosticTrace);
             canvasMs = performance.now() - canvasStartedAt;
             const uiStartedAt = performance.now();
             if (bodyVisible !== wholeBodyDetected) {
@@ -2588,52 +2770,20 @@ function onPoseResults(results, diagnosticTrace) {
             // Stopping the stream on partial occlusion (common at squat
             // depth when ankles flicker) was aborting in-progress reps.
             const sendStartedAt = performance.now();
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                const sendClockMs = performance.now();
-                const keypointSendDue =
-                    nextKeypointSendAt === null || sendClockMs >= nextKeypointSendAt;
-                const websocketReady =
-                    ws.bufferedAmount < MAX_WEBSOCKET_BUFFER_BYTES;
-                if (keypointSendDue && websocketReady) {
-                    const diagnostic = poseDiagnostics?.sent(diagnosticTrace, ws.bufferedAmount);
-                    ws.send(JSON.stringify({
-                        type: "keypoints",
-                        keypoints: keypoints,
-                        world_keypoints: worldKeypoints,
-                        exercise: exerciseName,
-                        timestamp: currentTimestamp / 1000,
-                        ...(diagnostic ? { diagnostic } : {})
-                    }));
-                    nextKeypointSendAt = advanceKeypointDeadline(sendClockMs, nextKeypointSendAt);
-                } else {
-                    poseDiagnostics?.count(websocketReady ? 'sendCadenceSkips' : 'sendBufferSkips');
-                }
-                // Soft notify once; server warns without wiping the cycle.
-                if (!bodyVisible && exerciseActive && !occlusionSent) {
-                    ws.send(JSON.stringify({ type: "occlusion" }));
-                    occlusionSent = true;
-                } else if (bodyVisible) {
-                    occlusionSent = false;
-                }
-            }
+            sendPoseKeypoints({
+                landmarks,
+                worldLandmarks: rawWorldLandmarks,
+                bodyVisible,
+                sendPoseToBackend,
+                sendTimestampMs,
+                mediaTime,
+                diagnosticTrace
+            });
             sendMs = performance.now() - sendStartedAt;
 
         } else {
-            missingFrames++;
-            wholeBodyDetected = false;
-            latestFormOk = false;
-            formValidationReceived = false;
             const uiStartedAt = performance.now();
-            updateWholeBodyDetectionUI(false, false);
-
-            if (missingFrames >= MISSING_THRESHOLD && personDetected) {
-                personDetected = false;
-                resetAndroidPoseSmoothing();
-                handleNoPersonDetected();
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({ type: "no_person" }));
-                }
-            }
+            handleMissingPoseFrame();
             uiMs += performance.now() - uiStartedAt;
             canvasMs = performance.now() - canvasStartedAt;
         }
@@ -2663,8 +2813,6 @@ function onPoseResults(results, diagnosticTrace) {
 function updateWholeBodyDetectionUI(isVisible, hasPose = false) {
     if (isVisible) {
         personDetectionOverlay.classList.remove('active');
-        cameraStream.classList.remove('blur');
-        poseCanvas.classList.remove('blur');
         overlayActive = false;
     } else {
         personDetectionOverlay.classList.add('active');
@@ -2673,10 +2821,6 @@ function updateWholeBodyDetectionUI(isVisible, hasPose = false) {
                 ? 'Person detected — adjust your position'
                 : 'No person detected';
         }
-        // Avoid a live-video blur filter competing with pose inference
-        // for GPU/compositor time. The red skeleton provides framing.
-        cameraStream.classList.remove('blur');
-        poseCanvas.classList.remove('blur');
         overlayActive = true;
 
         if (timerRunning && isPlankExercise) {
@@ -2688,21 +2832,8 @@ function updateWholeBodyDetectionUI(isVisible, hasPose = false) {
 // Handle no person detected
 function handleNoPersonDetected() {
     deadliftTrackingStarted = false;
-    formStatus.textContent = "NO PERSON";
-    formStatus.className = "status bad";
-    feedbackText.textContent = "No person detected";
-
-    const mobileFormStatus = document.getElementById('form-status-mobile');
-    const mobileFeedbackText = document.getElementById('feedback-text-mobile');
-
-    if (mobileFormStatus) {
-        mobileFormStatus.textContent = "NO PERSON";
-        mobileFormStatus.className = "bad";
-    }
-
-    if (mobileFeedbackText) {
-        mobileFeedbackText.textContent = "No person detected";
-    }
+    setFormDisplay('NO PERSON');
+    setFeedbackDisplay('No person detected');
 
     if (timerRunning && isPlankExercise) {
         stopTimer();
@@ -2710,9 +2841,9 @@ function handleNoPersonDetected() {
 }
 
 function initializeWebSocket() {
-    const apiExercise = exerciseApiNames[exerciseName] || exerciseName;
+    const apiExercise = resolveExercise(exerciseName)?.apiName || exerciseName;
     const exerciseParam = apiExercise ? `&exercise=${apiExercise}` : '';
-    const hammerParams = isMultiModeApiExercise(apiExercise)
+    const hammerParams = isMultiModeExercise(apiExercise)
         ? `&mode=${encodeURIComponent(multiModeMode)}&selected_side=${encodeURIComponent(multiModeSelectedSide)}`
         : '';
     const wsUrl = `${API_BASE_URL.replace(/^http/, 'ws')}/ws?session_id=${sessionId}${exerciseParam}${hammerParams}`;
@@ -2763,11 +2894,7 @@ function formatTime(milliseconds) {
 // Update timer display
 function updateTimerDisplay() {
     if (isPlankExercise) {
-        repCounter.textContent = formatTime(elapsedTime);
-        const mobileRepCounter = document.getElementById('rep-counter-mobile');
-        if (mobileRepCounter) {
-            mobileRepCounter.textContent = formatTime(elapsedTime);
-        }
+        setRepDisplay(formatTime(elapsedTime), { time: true });
     }
 }
 
@@ -2797,7 +2924,19 @@ function stopTimer() {
 let feedbackFrameCount = 0;
 
 // Update UI with exercise data
+function syncBarbellPoseRoiRepLock(data) {
+    if (!exerciseUsesPoseContinuityGate()) {
+        setPoseRoiRepHardLock?.(false);
+        return;
+    }
+    const phaseRaw = data?.phase ?? data?.movement_phase ?? data?.current_state ?? '';
+    const phase = String(phaseRaw).toLowerCase();
+    const repActive = new Set(['concentric', 'top', 'eccentric']).has(phase);
+    setPoseRoiRepHardLock?.(repActive);
+}
+
 function updateUI(data) {
+    syncBarbellPoseRoiRepLock(data);
     if (
         (data.exercise === 'deadlift'
             || exerciseName === 'deadlift_rules'
@@ -2850,10 +2989,7 @@ function updateUI(data) {
                 data.last_invalid_rep_reason
             )
         };
-        for (const [id, value] of Object.entries(frontRaiseValues)) {
-            const element = document.getElementById(id);
-            if (element) element.textContent = value;
-        }
+        setDetailValues(frontRaiseValues);
     }
 
     if (data.exercise === 'romanian_deadlift' || exerciseName === 'romanian_deadlift_rules') {
@@ -2883,10 +3019,7 @@ function updateUI(data) {
             'rdl-state': data.current_state || 'not_ready',
             'rdl-invalid': data.last_invalid_rep_reason || 'None'
         };
-        for (const [id, value] of Object.entries(rdlValues)) {
-            const element = document.getElementById(id);
-            if (element) element.textContent = value;
-        }
+        setDetailValues(rdlValues);
     }
 
     if (data.exercise === 'hammer_curl' || exerciseName === 'hammer_curl_rules') {
@@ -2906,10 +3039,7 @@ function updateUI(data) {
             'hammer-state': data.current_state || 'not_ready',
             'hammer-invalid': data.last_invalid_rep_reason || 'None'
         };
-        for (const [id, value] of Object.entries(hammerValues)) {
-            const element = document.getElementById(id);
-            if (element) element.textContent = value;
-        }
+        setDetailValues(hammerValues);
     }
 
     // Handle timer for plank exercises
@@ -2932,11 +3062,10 @@ function updateUI(data) {
 
     // IMMEDIATE REP VOICE 
     if (data.reps !== undefined && !isPlankExercise) {
-        const isMultiModeExercise =
-            ['hammer_curl', 'shoulder front raise', 'shoulder lateral raise']
-                .includes(data.exercise)
-            || multiModeExerciseKeys.has(exerciseName);
-        const showAlternatingArmCounts = isMultiModeExercise && (
+        const multiModeActive =
+            isMultiModeExercise(data.exercise)
+            || isMultiModeExercise(exerciseName);
+        const showAlternatingArmCounts = multiModeActive && (
             data.mode === 'alternating' || multiModeMode === 'alternating'
         );
         const displayedReps = showAlternatingArmCounts
@@ -2948,26 +3077,10 @@ function updateUI(data) {
         const displayedRepsText = String(displayedReps);
         if (displayedRepsText !== lastDisplayedReps) {
             lastDisplayedReps = displayedRepsText;
-            repCounter.textContent = displayedRepsText;
-        }
-        const counterLabel = document.getElementById('counter-label');
-        const desiredCounterLabel = showAlternatingArmCounts ? 'LEFT | RIGHT' : 'REPS';
-        if (counterLabel && counterLabel.textContent !== desiredCounterLabel) {
-            counterLabel.textContent = desiredCounterLabel;
-        }
-
-        // Update mobile UI
-        const mobileRepCounter = document.getElementById('rep-counter-mobile');
-        if (mobileRepCounter && mobileRepCounter.textContent !== displayedRepsText) {
-            mobileRepCounter.textContent = displayedRepsText;
-            mobileRepCounter.classList.add('pulse');
-            setTimeout(() => mobileRepCounter.classList.remove('pulse'), 1000);
-        }
-        const mobileCounterLabel = document.getElementById('counter-label-mobile');
-        if (mobileCounterLabel) {
-            mobileCounterLabel.textContent = showAlternatingArmCounts
-                ? 'Left | Right:'
-                : 'Reps:';
+            setRepDisplay(displayedRepsText, {
+                alternating: showAlternatingArmCounts,
+                pulse: true
+            });
         }
     }
 
@@ -2982,15 +3095,7 @@ function updateUI(data) {
 
             if (statusText !== lastFormStatus) {
                 lastFormStatus = statusText;
-
-                formStatus.textContent = statusText;
-                formStatus.className = "status " + (data.form_ok ? "good" : "bad");
-
-                const mobileFormStatus = document.getElementById('form-status-mobile');
-                if (mobileFormStatus) {
-                    mobileFormStatus.textContent = statusText;
-                    mobileFormStatus.className = data.form_ok ? "good" : "bad";
-                }
+                setFormDisplay(statusText, data.form_ok === true);
             }
         }
     }
@@ -3004,27 +3109,7 @@ function updateUI(data) {
             // Always update the UI text immediately
             if (currentFeedback !== lastFeedbackText) {
                 lastFeedbackText = currentFeedback;
-
-                feedbackText.textContent = currentFeedback;
-
-                // Add animation for feedback changes
-                feedbackText.style.opacity = '0';
-                setTimeout(() => {
-                    feedbackText.style.transition = 'opacity 0.5s ease';
-                    feedbackText.style.opacity = '1';
-                }, 100);
-
-                const mobileFeedbackText = document.getElementById('feedback-text-mobile');
-                if (mobileFeedbackText) {
-                    mobileFeedbackText.textContent = currentFeedback;
-
-                    // Add animation for feedback changes
-                    mobileFeedbackText.style.opacity = '0';
-                    setTimeout(() => {
-                        mobileFeedbackText.style.transition = 'opacity 0.5s ease';
-                        mobileFeedbackText.style.opacity = '1';
-                    }, 100);
-                }
+                setFeedbackDisplay(currentFeedback, { animate: true });
                 // check after every 3 feedback even if there are 200 feedback
                 if (feedbackFrameCount % 3 === 0 && !isPlankExercise) {
                     feedbackVoice.speak(currentFeedback + " Total reps are " + data.reps);
@@ -3064,8 +3149,6 @@ function stopExercise() {
     }
 
     personDetectionOverlay.classList.remove('active');
-    cameraStream.classList.remove('blur');
-    poseCanvas.classList.remove('blur');
 
     if (camera) {
         camera.stop();
