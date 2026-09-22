@@ -180,6 +180,7 @@
                 presentedFrames: 0,
                 submitted: 0,
                 busySkips: 0,
+                workerBusyDrops: 0,
                 analysisRateSkips: 0,
                 resultCallbacks: 0,
                 resultsWithPose: 0,
@@ -206,10 +207,21 @@
                     poseResultFps: fps.resultCallbacks,
                     keypointFps: fps.keypointsSent,
                     busySkips: measuredCounts.busySkips,
+                    workerBusyDrops: measuredCounts.workerBusyDrops,
                     analysisRateSkips: measuredCounts.analysisRateSkips,
+                    busySkipPct: measuredCounts.videoCallbacks
+                        ? (measuredCounts.busySkips * 100) / measuredCounts.videoCallbacks
+                        : null,
+                    workerDropPct: measuredCounts.submitted
+                        ? (measuredCounts.workerBusyDrops * 100)
+                            / (measuredCounts.submitted + measuredCounts.workerBusyDrops)
+                        : null,
                     captureMs: latency.captureMs ?? null,
                     inferenceMs: latency.inferenceMs ?? null,
                     resultAgeMs: latency.observedToLandmarkMs ?? null,
+                    captureToLandmarkMs: latency.observedToLandmarkMs ?? null,
+                    captureToDrawMs: latency.observedToDrawMs ?? null,
+                    inferenceP95Ms: latency.inferenceMs?.p95 ?? null,
                 },
                 latency, frames: Array.from(frames.values(), frame => ({ ...frame })),
                 events: events.map(value => ({ ...value })),
