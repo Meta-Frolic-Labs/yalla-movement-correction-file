@@ -59,7 +59,13 @@ const POSE_MODEL_VARIANT = requestedPoseModel === 'lite'
             : (typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent)
                 ? 'lite'
                 : 'full');
-const BACKEND_URL = 'https://yalla-ai.onlinetestingserver.com';
+const isLocalFrontendHost = ['localhost', '127.0.0.1', '[::1]']
+    .includes(window.location.hostname);
+const BACKEND_URL =
+    poseDebugOptions.get('backend')
+    || (isLocalFrontendHost
+        ? 'http://127.0.0.1:8001'
+        : 'https://yalla-ai.onlinetestingserver.com');
 const API_BASE_URL = `${BACKEND_URL}/v1/exercise`;
 const POSE_MODEL_REVISION = POSE_MODEL_VARIANT === 'lite' ? '1' : 'latest';
 const POSE_CONFIDENCE_PROFILES = Object.freeze({
