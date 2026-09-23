@@ -40,6 +40,7 @@ const POSE_AB_MODE = poseDebugOptions.get('poseAbMode') === 'b' ? 'b' : 'a';
 const poseDiagnostics = window.createPoseDiagnostics?.(
     cameraMetricsEnabled ? '?poseDebug=1' : window.location.search
 );
+const poseLandmarkSmoother = window.createPoseLandmarkSmoother();
 window.poseDiagnostics = poseDiagnostics;
 window.__poseScheduler = {
     intervalMs: poseCaptureIntervalMs,
@@ -881,6 +882,7 @@ function resetExerciseState() {
     overlayActive = false;
     occlusionSent = false;
     deadliftTrackingStarted = false;
+    poseLandmarkSmoother.reset();
     resetPosePersonLock();
 
     lastFeedbackText = "";
@@ -2462,6 +2464,7 @@ function drawShoulderRaiseHeightGuide(canvasCtx, landmarks) {
 }
 
 function resetPoseTrackingState() {
+    poseLandmarkSmoother.reset();
     resetPosePersonLock();
 }
 
@@ -2530,8 +2533,9 @@ function renderIsolatedCanvasDiagnostic(results, diagnosticTrace) {
     canvasCtx.save();
     canvasCtx.clearRect(0, 0, poseCanvas.width, poseCanvas.height);
     if (results.poseLandmarks) {
-        const landmarks = results.poseLandmarks;
-        poseDiagnostics?.displayed(landmarks, landmarks);
+        const rawLandmarks = results.poseLandmarks;
+        const landmarks = poseLandmarkSmoother.update(rawLandmarks);
+        poseDiagnostics?.displayed(rawLandmarks, landmarks);
         drawPoseConnections(canvasCtx, landmarks, POSE_CONNECTIONS, {
             color: VALID_POSE_COLOR,
             ...SKELETON_CONNECTOR_STYLE,
@@ -2556,8 +2560,8 @@ function landmarksToKeypoints(landmarks = []) {
     ]);
 }
 
-function renderPoseOverlay(canvasCtx, landmarks, bodyVisible, diagnosticTrace) {
-    poseDiagnostics?.displayed(landmarks, landmarks);
+function renderPoseOverlay(canvasCtx, landmarks, bodyVisible, diagnosticTrace, rawLandmarks) {
+    poseDiagnostics?.displayed(rawLandmarks, landmarks);
     if (hasDrawablePose(landmarks)) {
         const poseColor = bodyVisible && formValidationReceived && latestFormOk
             ? VALID_POSE_COLOR
@@ -2715,10 +2719,11 @@ function onPoseResults(
             const rawLandmarks = results.poseLandmarks;
             const rawWorldLandmarks = results.poseWorldLandmarks || [];
 
-            // Render the worker landmark directly. A previous arm-refinement
-            // heuristic predicted wrists from the elbow and could make a real
-            // upward curl look magnetically attached to the upper arm.
+            // Keep the worker landmarks for person tracking and backend input.
+            // Smooth only the displayed copy; the backend filters its own raw
+            // measurements, avoiding two smoothing passes on the same frame.
             const landmarks = rawLandmarks;
+            const displayLandmarks = poseLandmarkSmoother.update(rawLandmarks);
 
             if (exerciseUsesPoseContinuityGate()) {
                 const roiUpdate = updatePosePersonRoiFromLandmarks?.(
@@ -2754,9 +2759,10 @@ function onPoseResults(
             const bodyVisible = isWholeBodyVisible(landmarks);
             renderPoseOverlay(
                 canvasCtx,
-                landmarks,
+                displayLandmarks,
                 bodyVisible,
-                diagnosticTrace
+                diagnosticTrace,
+                rawLandmarks
             );
             canvasMs = performance.now() - canvasStartedAt;
             const uiStartedAt = performance.now();
